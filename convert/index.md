@@ -1,6 +1,6 @@
 []{#index.xhtml}
 
-## []{#index.xhtml#page_771}Index {#index.xhtml#index .h2fm}
+## [] {#index.xhtml#page_771}Index {#index.xhtml#index .h2fm}
 
 `->` [[249]{.reds}](#ch14.xhtml#page_249)
 
@@ -16,7 +16,7 @@ parsing [[225]{.reds}](#ch13.xhtml#page_225)
 
 `>>`
 
-versus` > >` [[28]{.reds}](#ch2.xhtml#page_28), [[226]{.reds}](#ch13.xhtml#page_226)
+versus ` > >` [[28]{.reds}](#ch2.xhtml#page_28), [[226]{.reds}](#ch13.xhtml#page_226)
 
 `[ ]` [[685]{.reds}](#appc.xhtml#page_685)
 
@@ -368,7 +368,7 @@ qualification [[456]{.reds}](#ch19.xhtml#page_456)
 
 template see class template
 
-versus` struct` [[151]{.reds}](#ch10.xhtml#page_151)
+versus ` struct` [[151]{.reds}](#ch10.xhtml#page_151)
 
 class template [[**23**]{.reds}](#ch2.xhtml#page_23), [[151]{.reds}](#ch10.xhtml#page_151), [[**760**]{.reds}](#glossary.xhtml#page_760)
 
@@ -414,7 +414,7 @@ collection class [[**760**]{.reds}](#glossary.xhtml#page_760), see container
 
 compiler [[**760**]{.reds}](#glossary.xhtml#page_760)
 
-compile-time` if` [[**134**]{.reds}](#ch8.xhtml#page_134), [[**263**]{.reds}](#ch14.xhtml#page_263), [[474]{.reds}](#ch20.xhtml#page_474)
+compile-time ` if` [[**134**]{.reds}](#ch8.xhtml#page_134), [[**263**]{.reds}](#ch14.xhtml#page_263), [[474]{.reds}](#ch20.xhtml#page_474)
 
 compiling [[255]{.reds}](#ch14.xhtml#page_255), [[651]{.reds}](#ch28.xhtml#page_651)
 
@@ -440,7 +440,7 @@ definition [[742]{.reds}](#appe.xhtml#page_742)
 
 disable function templates [[475]{.reds}](#ch20.xhtml#page_475)
 
-with` static_assert` [[29]{.reds}](#ch2.xhtml#page_29)
+with ` static_assert` [[29]{.reds}](#ch2.xhtml#page_29)
 
 `conditional` [[171]{.reds}](#ch11.xhtml#page_171), [[443]{.reds}](#ch19.xhtml#page_443), [[**732**]{.reds}](#appd.xhtml#page_732)
 
@@ -488,7 +488,7 @@ deduced [[271]{.reds}](#ch15.xhtml#page_271)
 
 context-sensitive [[215]{.reds}](#ch13.xhtml#page_215)
 
-contextually convertible to` bool` [[**485**]{.reds}](#ch20.xhtml#page_485)
+contextually convertible to ` bool` [[**485**]{.reds}](#ch20.xhtml#page_485)
 
 conversion
 
@@ -506,11 +506,11 @@ sequence [[689]{.reds}](#appc.xhtml#page_689)
 
 standard [[683]{.reds}](#appc.xhtml#page_683)
 
-to` bool` [[689]{.reds}](#appc.xhtml#page_689)
+to ` bool` [[689]{.reds}](#appc.xhtml#page_689)
 
 to ellipsis [[417]{.reds}](#ch19.xhtml#page_417), [[683]{.reds}](#appc.xhtml#page_683)
 
-to` void*` [[689]{.reds}](#appc.xhtml#page_689)
+to ` void*` [[689]{.reds}](#appc.xhtml#page_689)
 
 user-defined [[195]{.reds}](#ch12.xhtml#page_195), [[683]{.reds}](#appc.xhtml#page_683)
 
@@ -548,13 +548,13 @@ Cppreference [[749]{.reds}](#bib.xhtml#page_749)
 
 CRTP [[**495**]{.reds}](#ch21.xhtml#page_495), [[**761**]{.reds}](#glossary.xhtml#page_761)
 
-for` Variant` [[606]{.reds}](#ch26.xhtml#page_606)
+for ` Variant` [[606]{.reds}](#ch26.xhtml#page_606)
 
 versus Barton-Nackman trick [[515]{.reds}](#ch21.xhtml#page_515)
 
 curiously recurring template pattern [[**495**]{.reds}](#ch21.xhtml#page_495), **[[761]{.reds}](#glossary.xhtml#page_761)**
 
-for` Variant` [[606]{.reds}](#ch26.xhtml#page_606)
+for ` Variant` [[606]{.reds}](#ch26.xhtml#page_606)
 
 current instantiation [[**223**]{.reds}](#ch13.xhtml#page_223)
 
@@ -598,7 +598,7 @@ for expressions [[**678**]{.reds}](#appb.xhtml#page_678)
 
 `decltype(auto)` [[162]{.reds}](#ch11.xhtml#page_162), [[301]{.reds}](#ch15.xhtml#page_301)
 
-and` void` [[162]{.reds}](#ch11.xhtml#page_162)
+and ` void` [[162]{.reds}](#ch11.xhtml#page_162)
 
 as return type [[301]{.reds}](#ch15.xhtml#page_301)
 
@@ -682,7 +682,7 @@ dependent expression [[**233**]{.reds}](#ch13.xhtml#page_233)
 
 dependent name [[215]{.reds}](#ch13.xhtml#page_215), [[217]{.reds}](#ch13.xhtml#page_217), [[**762**]{.reds}](#glossary.xhtml#page_762)
 
-in` using` declarations [[**231**]{.reds}](#ch13.xhtml#page_231)
+in ` using` declarations [[**231**]{.reds}](#ch13.xhtml#page_231)
 
 of templates [[**230**]{.reds}](#ch13.xhtml#page_230)
 
@@ -982,7 +982,7 @@ overloading [[15]{.reds}](#ch1.xhtml#page_15), [[**326**]{.reds}](#ch16.xhtml#pa
 
 partial specialization [[356]{.reds}](#ch17.xhtml#page_356)
 
-versus` friend` function [[499]{.reds}](#ch21.xhtml#page_499)
+versus ` friend` function [[499]{.reds}](#ch21.xhtml#page_499)
 
 functor [[**763**]{.reds}](#glossary.xhtml#page_763)
 
@@ -1112,7 +1112,7 @@ initializer [[**764**]{.reds}](#glossary.xhtml#page_764)
 
 initializer list [[69]{.reds}](#ch5.xhtml#page_69), [[**764**]{.reds}](#glossary.xhtml#page_764)
 
-and` auto` [[303]{.reds}](#ch15.xhtml#page_303)
+and ` auto` [[303]{.reds}](#ch15.xhtml#page_303)
 
 and overloading [[691]{.reds}](#appc.xhtml#page_691)
 
@@ -1634,7 +1634,7 @@ move constructor
 
 as template [[79]{.reds}](#ch5.xhtml#page_79)
 
-detect` noexcept` [[443]{.reds}](#ch19.xhtml#page_443)
+detect ` noexcept` [[443]{.reds}](#ch19.xhtml#page_443)
 
 move semantics
 
@@ -1712,7 +1712,7 @@ NIHCL [[383]{.reds}](#ch18.xhtml#page_383)
 
 `noexcept` [[290]{.reds}](#ch15.xhtml#page_290), [[415]{.reds}](#ch19.xhtml#page_415)
 
-in` declval` [[415]{.reds}](#ch19.xhtml#page_415)
+in ` declval` [[415]{.reds}](#ch19.xhtml#page_415)
 
 traits [[**443**]{.reds}](#ch19.xhtml#page_443)
 
@@ -1764,7 +1764,7 @@ on-demand instantiation [[243]{.reds}](#ch14.xhtml#page_243)
 
 one-definition rule [[154]{.reds}](#ch10.xhtml#page_154), [[**663**]{.reds}](#appa.xhtml#page_663), [[**765**]{.reds}](#glossary.xhtml#page_765)
 
-operator`[ ]`
+operator `[ ]`
 
 at compile time [[599]{.reds}](#ch25.xhtml#page_599)
 
@@ -1776,7 +1776,7 @@ in template argument list [[50]{.reds}](#ch3.xhtml#page_50)
 
 parsing [[277]{.reds}](#ch15.xhtml#page_277), [[599]{.reds}](#ch25.xhtml#page_599)
 
-`operator-`function-id [[216]{.reds}](#ch13.xhtml#page_216)
+`operator-` function-id [[216]{.reds}](#ch13.xhtml#page_216)
 
 optimization
 
@@ -1886,7 +1886,7 @@ parameterized traits [[394]{.reds}](#ch19.xhtml#page_394)
 
 parameter pack [[**56**]{.reds}](#ch4.xhtml#page_56), [[**204**]{.reds}](#ch12.xhtml#page_204), [[454]{.reds}](#ch19.xhtml#page_454), [[549]{.reds}](#ch24.xhtml#page_549)
 
-and` enable_if` [[735]{.reds}](#appd.xhtml#page_735)
+and ` enable_if` [[735]{.reds}](#appd.xhtml#page_735)
 
 deduction [[275]{.reds}](#ch15.xhtml#page_275)
 
@@ -1960,7 +1960,7 @@ as template parameter [[**50**]{.reds}](#ch3.xhtml#page_50)
 
 `decltype(auto)` [[301]{.reds}](#ch15.xhtml#page_301)
 
-[]{#index.xhtml#page_783}placement` new` and` launder()` [[617]{.reds}](#ch26.xhtml#page_617)
+[]{#index.xhtml#page_783}placement ` new` and ` launder()` [[617]{.reds}](#ch26.xhtml#page_617)
 
 POD [[151]{.reds}](#ch10.xhtml#page_151), [[**766**]{.reds}](#glossary.xhtml#page_766)
 
@@ -1972,7 +1972,7 @@ pointer
 
 conversions [[689]{.reds}](#appc.xhtml#page_689)
 
-conversion to` void*` [[689]{.reds}](#appc.xhtml#page_689)
+conversion to ` void*` [[689]{.reds}](#appc.xhtml#page_689)
 
 iterator traits [[400]{.reds}](#ch19.xhtml#page_400)
 
@@ -2042,7 +2042,7 @@ prvalue [[**674**]{.reds}](#appb.xhtml#page_674), [[**767**]{.reds}](#glossary.x
 
 `ptrdiff_t`
 
-versus` size_t` [[685]{.reds}](#appc.xhtml#page_685)
+versus ` size_t` [[685]{.reds}](#appc.xhtml#page_685)
 
 `ptrdiff_t` and type traits [[702]{.reds}](#appd.xhtml#page_702)
 
@@ -2238,7 +2238,7 @@ Silicon Graphics [[462]{.reds}](#ch19.xhtml#page_462)
 
 `size_t`
 
-versus` ptrdiff_t` [[685]{.reds}](#appc.xhtml#page_685)
+versus ` ptrdiff_t` [[685]{.reds}](#appc.xhtml#page_685)
 
 `size_t` type and type traits [[702]{.reds}](#appd.xhtml#page_702)
 
@@ -2324,7 +2324,7 @@ versus enumeration [[543]{.reds}](#ch23.xhtml#page_543)
 
 static data member template [[**768**]{.reds}](#glossary.xhtml#page_768)
 
-static` if` [[266]{.reds}](#ch14.xhtml#page_266)
+static ` if` [[266]{.reds}](#ch14.xhtml#page_266)
 
 static member [[28]{.reds}](#ch2.xhtml#page_28), [[181]{.reds}](#ch12.xhtml#page_181)
 
@@ -2574,7 +2574,7 @@ traits [[**385**]{.reds}](#ch19.xhtml#page_385), [[638]{.reds}](#ch27.xhtml#page
 
 as predicates [[410]{.reds}](#ch19.xhtml#page_410)
 
-detecting` noexcept` [[**443**]{.reds}](#ch19.xhtml#page_443)
+detecting ` noexcept` [[**443**]{.reds}](#ch19.xhtml#page_443)
 
 factory [[422]{.reds}](#ch19.xhtml#page_422)
 
@@ -2622,7 +2622,7 @@ EBCO [[593]{.reds}](#ch25.xhtml#page_593)
 
 `get()` [[598]{.reds}](#ch25.xhtml#page_598)
 
-operator`[ ]` [[599]{.reds}](#ch25.xhtml#page_599)
+operator `[ ]` [[599]{.reds}](#ch25.xhtml#page_599)
 
 `tuple_element` [[308]{.reds}](#ch15.xhtml#page_308)
 
@@ -2658,9 +2658,9 @@ dependent name [[**228**]{.reds}](#ch13.xhtml#page_228)
 
 erasure [[**523**]{.reds}](#ch22.xhtml#page_523)
 
-for` bool_constant` [[**699**]{.reds}](#appd.xhtml#page_699)
+for ` bool_constant` [[**699**]{.reds}](#appd.xhtml#page_699)
 
-for` integral_constant` [[**698**]{.reds}](#appd.xhtml#page_698)
+for ` integral_constant` [[**698**]{.reds}](#appd.xhtml#page_698)
 
 function [[**401**]{.reds}](#ch19.xhtml#page_401)
 
@@ -2668,7 +2668,7 @@ incomplete [[**154**]{.reds}](#ch10.xhtml#page_154)
 
 metaprogramming [[531]{.reds}](#ch23.xhtml#page_531)
 
-of` *this` [[686]{.reds}](#appc.xhtml#page_686)
+of ` *this` [[686]{.reds}](#appc.xhtml#page_686)
 
 of container element [[401]{.reds}](#ch19.xhtml#page_401)
 
@@ -2814,9 +2814,9 @@ value
 
 as parameter [[45]{.reds}](#ch3.xhtml#page_45)
 
-for` bool_constant` [[**699**]{.reds}](#appd.xhtml#page_699)
+for ` bool_constant` [[**699**]{.reds}](#appd.xhtml#page_699)
 
-for` integral_constant` [[**698**]{.reds}](#appd.xhtml#page_698)
+for ` integral_constant` [[**698**]{.reds}](#appd.xhtml#page_698)
 
 functions [[401]{.reds}](#ch19.xhtml#page_401)
 
@@ -2844,9 +2844,9 @@ value traits [[389]{.reds}](#ch19.xhtml#page_389)
 
 `value_type`
 
-for` bool_constant` [[**699**]{.reds}](#appd.xhtml#page_699)
+for ` bool_constant` [[**699**]{.reds}](#appd.xhtml#page_699)
 
-for` integral_constant` [[**698**]{.reds}](#appd.xhtml#page_698)
+for ` integral_constant` [[**698**]{.reds}](#appd.xhtml#page_698)
 
 Vandevoorde, David [[242]{.reds}](#ch13.xhtml#page_242), [[321]{.reds}](#ch15.xhtml#page_321), [[516]{.reds}](#ch21.xhtml#page_516), [[547]{.reds}](#ch23.xhtml#page_547), [[647]{.reds}](#ch27.xhtml#page_647)
 
@@ -2868,7 +2868,7 @@ base classes [[65]{.reds}](#ch4.xhtml#page_65)
 
 variadic template [[**55**]{.reds}](#ch4.xhtml#page_55), [[190]{.reds}](#ch12.xhtml#page_190), [[**200**]{.reds}](#ch12.xhtml#page_200)
 
-and` enable_if` [[735]{.reds}](#appd.xhtml#page_735)
+and ` enable_if` [[735]{.reds}](#appd.xhtml#page_735)
 
 deduction guide [[64]{.reds}](#ch4.xhtml#page_64)
 
@@ -2900,11 +2900,11 @@ member templates [[**182**]{.reds}](#ch12.xhtml#page_182)
 
 parameterized [[**510**]{.reds}](#ch21.xhtml#page_510)
 
-visitor for` Variant` [[**617**]{.reds}](#ch26.xhtml#page_617)
+visitor for ` Variant` [[**617**]{.reds}](#ch26.xhtml#page_617)
 
 `void`
 
-and` decltype(auto)` [[162]{.reds}](#ch11.xhtml#page_162)
+and ` decltype(auto)` [[162]{.reds}](#ch11.xhtml#page_162)
 
 as template parameter [[6]{.reds}](#ch1.xhtml#page_6)
 
