@@ -1,1817 +1,4 @@
 
-
-## Chapter 7 
-
-## By Value or by Reference? 
-
-Since the beginning, C++ has provided call-by-value and call-by-reference, and it is not always easy to decide which one to choose: Usually calling by reference is cheaper for nontrivial objects but more complicated. C++11 added move semantics to the mix, which means that we now have different ways to pass by reference:[1]
-
-1. **X const&** (constant lvalue reference):
-
-The parameter refers to the passed object, without the ability to modify it.
-
-2. **X&** (nonconstant lvalue reference):
-
-The parameter refers to the passed object, with the ability to modify it.
-
-3. **X&&** (rvalue reference):
-
-The parameter refers to the passed object, with move semantics, meaning that you can modify or "steal" the value.
-
-Deciding how to declare parameters with known concrete types is complicated enough. In templates, types are not known, and therefore it becomes even harder to decide which passing mechanism is appropriate.
-
-Nevertheless, in Section [[1.6.1]] on page [[20]] we did recommend passing parameters in function templates by value unless there are good reasons, such as the following:
-
-• Copying is not possible.[2]
-
-• Parameters are used to return data.
-
-• Templates just forward the parameters to somewhere else by keeping all the properties of the original arguments.
-
-• There are significant performance improvements.
-
-This chapter discusses the different approaches to declare parameters in templates, motivating the general recommendation to pass by value, and providing arguments for the reasons not to do so. It also discusses the tricky problems you run into when dealing with string literals and other raw arrays.
-
-When reading this chapter, it is helpful to be familiar with the terminology of value categories (*lvalue*, *rvalue*, *prvalue*, *xvalue*, etc.), which is explained in [Appendix [B]].
-
-### 7.1 Passing by Value 
-
-When passing arguments by value, each argument must in principle be copied. Thus, each parameter becomes a copy of the passed argument. For classes, the object created as a copy generally is initialized by the copy constructor.
-
-Calling a copy constructor can become expensive. However, there are various way to avoid expensive copying even when passing parameters by value: In fact, compilers might optimize away copy operations copying objects and can become cheap even for complex objects by using move semantics.
-
-For example, let's look at a simple function template implemented so that the argument is passed by value:
-
-[Click here to view code image]
-
-template<typename T>
-void printV (T arg) {
-  ...
-}
-
-When calling this function template for an integer, the resulting code is
-
-[Click here to view code image]
-
-void printV [(int] arg) {
-  ...
-}
-
-Parameter `arg` becomes a copy of any passed argument, whether it is an object or a literal or a value returned by a function.
-
-If we define a `std::string` and call our function template for it:
-
-std::string s = "hi";\
-printV(s);
-
-the template parameter `T` is instantiated as `std::string` so that we get
-
-[Click here to view code image]
-
-void printV (std::string arg)
-{
-  ...
-}
-
-Again, when passing the string, `arg` becomes a copy of `s`. This time the copy is created by the copy constructor of the string class, which is a potentially expensive operation, because in principle this copy operation creates a full or "deep" copy so that the copy internally allocates its own memory to hold the value.[3]
-
-However, the potential copy constructor is not always called. Consider the following:
-
-[Click here to view code image]
-
-std::string returnString();
-std::string s = "hi";\
-printV(s);                  //copy constructor
-printV(std::string("hi"));  //copying usually optimized away (if not, move constructor)
-printV(returnString());     // copying usually optimized away (if not, move constructor)
-printV(std::move(s));       // move constructor
-
-In the first call we pass an *lvalue*, which means that the copy constructor is used. However, in the second and third calls, when directly calling the function template for *prvalues* (temporary objects created on the fly or returned by another function; see [Appendix [B]]), compilers usually optimize passing the argument so that no copying constructor is called at all. Note that since C++17, this optimization is required. Before C++17, a compiler that doesn't optimize the copying away, must at least have to try to use move semantics, which usually makes copying cheap. In the last call, when passing an *xvalue* (an existing nonconstant object with `std::move()`), we force to call the move constructor by signaling that we no longer need the value of `s`.
-
-Thus, calling an implementation of `printV()` that declares the parameter to be passed by value usually is only expensive if we pass an *lvalue* (an object we created before and typically still use afterwards, as we didn't use `std::move()` to pass it). Unfortunately, this is a pretty common case. One reason is that it is pretty common to create objects early to pass them later (after some modifications) to other functions.
-
-##### Passing by Value Decays 
-
-There is another property of passing by value we have to mention: When passing arguments to a parameter by value, the type *decays*. This means that raw arrays get converted to pointers and that qualifiers such as `const` and `volatile` are removed (just like using the value as initializer for an object declared with `auto`):[4]
-
-[Click here to view code image]
-
-template<typename T>
-void printV (T arg) {
-  ...
-}
-
-[Click here to view code image]
-
-std::string const c = "hi";\
-printV(c);                  // [c] decays so that [arg] has type [std::string]\
-\
-printV("hi");               //decays to pointer so that [arg] has type [char consT
-\
-int arr[4];\
-printV(arr);                // decays to pointer so that [arg] has type [char consT
-
-Thus, when passing the string literal `"hi"`, its type `char const[3]` decays to `char const*` so that this is the deduced type of `T`. Thus, the template is instantiated as follows:
-
-[Click here to view code image]
-
-void printV [(char const]\* arg)
-{
-  ...
-}
-
-This behavior is derived from C and has its benefits and drawbacks. Often it simplifies the handling of passed string literals, but the drawback is that inside `printV()` we can't distinguish between passing a pointer to a single element and passing a raw array. For this reason, we will discuss how to deal with string literals and other raw arrays in Section [[7.4]] on page [[115]].
-
-### 7.2 Passing by Reference 
-
-Now let's discuss the different flavors of passing by reference. In all cases, no copy gets created (because the parameter just refers to the passed argument). Also, passing the argument never decays. However, sometimes passing is not possible, and if passing is possible, there are cases in which the resulting type of the parameter may cause problems.
-
-#### 7.2.1 Passing by Constant Reference 
-
-To avoid any (unnecessary) copying, when passing nontemporary objects, we can use constant references. For example:
-
-[Click here to view code image]
-
-template<typename T>
-void printR (T const& arg) {
-  ...
-}
-
-With this declaration, passing an object never creates a copy (whether it's cheap or not):
-
-[Click here to view code image]
-
-std::string returnString();
-std::string s = "hi";\
-printR(s);                  // no copy
-printR(std::string("hi"));  // no copy
-printR(returnString());     // no copy
-printR(std::move(s));       // no copy
-
-Even an `int` is passed by reference, which is a bit counterproductive but shouldn't matter that much. Thus:
-
-[Click here to view code image]
-
-int i = 42;\
-printR(i);                  // passes reference instead of just copying [i]
-
-results in `printR()` being instantiated as:
-
-[Click here to view code image]
-
-void printR[(int const]& arg) {
-  ...
-}
-
-Under the hood, passing an argument by reference is implemented by passing the address of the argument. Addresses are encoded compactly, and therefore transferring an address from the caller to the callee is efficient in itself. However, passing an address can create uncertainties for the compiler when it compiles the caller's code: What is the callee doing with that address? In theory, the callee can change all the values that are "reachable" through that address. That means, that the compiler has to assume that all the values it may have cached (usually, in machine registers) are invalid after the call. Reloading all those values can be quite expensive. You may be thinking that we are passing by *constant* reference: Cannot the compiler deduce from that that no change can happen? Unfortunately, that is not the case because the caller may modify the referenced object through its own, non-`const` reference.[5]
-
-This bad news is moderated by inlining: If the compiler can expand the call *inline*, it can reason about the caller and the callee *together* and in many cases "see" that the address is not used for anything but passing the underlying value. Function templates are often very short and therefore likely candidates for inline expansion. However, if a template encapsulates a more complex algorithm, inlining is less likely to happen.
-
-##### Passing by Reference Does Not Decay 
-
-When passing arguments to parameters by reference, they do not *decay*. This means that raw arrays are not converted to pointers and that qualifiers such as `const` and `volatile` are not removed. However, because the *call* parameter is declared as `T` **const**`&`, the *template* parameter `T` itself is not deduced as `const`. For example:
-
-[Click here to view code image]
-
-template<typename T>
-void printR (T const& arg) {
-  ...
-}
-\
-std::string const c = "hi";\
-printR(c);              // [T] deduced as [std::string], [arg] is [std::string const&]\
-\
-printR("hi");           // [T] deduced as [char[3]], [arg] is [char const(&)[3]]\
-int arr[4];\
-printR(arr);            // [T] deduced as [int[4]], [arg] is [int const(&)[4]]
-
-Thus, local objects declared with type `T` in `printR()` are not constant.
-
-### 7.2.2 Passing by Nonconstant Reference 
-
-When you want to return values through passed arguments (i.e., when you want to use *out* or *inout* parameters), you have to use nonconstant references (unless you prefer to pass them via pointers). Again, this means that when passing the arguments, no copy gets created. The parameters of the called function template just get direct access to the passed argument.
-
-Consider the following:
-
-[Click here to view code image]
-
-template<typename T>
-void outR (T& arg) {
-  ...
-}
-
-Note that calling `outR()` for a temporary (prvalue) or an existing object passed with `std::move()` (xvalue) usually is not allowed:
-
-[Click here to view code image]
-
-std::string returnString();
-std::string s = "hi";\
-outR(s);                  //OK: [T] deduced as [std::string], [arg] is [std::string&]\
-outR(std::string("hi"));  //ERROR: not allowed to pass a temporary (prvalue)
-outR(returnString());     // ERROR: not allowed to pass a temporary (prvalue)
-outR(std::move(s));       // ERROR: not allowed to pass an xvalue
-
-You can pass raw arrays of nonconstant types, which again don't decay:
-
-[Click here to view code image]
-
-int arr[4];\
-outR(arr);              // OK: [T] deduced as [int[4]], [arg] is [int(&)[4]]
-
-Thus, you can modify elements and, for example, deal with the size of the array. For example:
-
-[Click here to view code image]
-
-template<typename T>
-void outR (T& arg) {
-  if (std::is_array<T>::value) {
-    std::cout << "got array of " << std::extent<T>::value << " elems\\n";\
-  }
-  ...
-}
-
-However, templates are a bit tricky here. If you pass a `const` argument, the deduction might result in `arg` becoming a declaration of a constant reference, which means that passing an rvalue is suddenly allowed, where an lvalue is expected:
-
-[Click here to view code image]
-
-std::string const c = "hi";\
-outR(c);                   // OK: [T] deduced as [std::string const]\
-outR(returnConstString()); // OK: same if [returnConstString()] returns const string
- outR(std::move(c));        // OK: [T] deduced as [std::string const][6]\
-outR("hi");                // OK: [T] deduced as [char const[3]]
-
-Of course, any attempt to modify the passed argument inside the function template is an error in such cases. Passing a `const` object is possible in the call expression itself, but when the function is fully instantiated (which may happen later in the compilation process) any attempt to modify the value will trigger an error (which, however, might happen deep inside the called template; see Section [[9.4]] on page [[143]]).
-
-If you want to disable passing constant objects to nonconstant references, you can do the following:
-
-• Use a static assertion to trigger a compile-time error:
-
-[Click here to view code image]
-
-template<typename T>
-void outR (T& arg) {
-  [static_assert](!std::is_const<T>::value,\
-                "out parameter of foo<T>(T&) is const");
-  ...
-}
-
-• Disable the template for this case either by using `std::enable_if<>` (see Section [[6.3]] on page [[98]]):
-
-[Click here to view code image]
-
-template<typename T,\
-         typename = std::enable_if_t<!std::is_const<T>::value>
-void outR (T& arg) {
-  ...
-}
-
-or concepts once they are supported (see Section [[6.5]] on page [[103]] and [Appendix [E]]):
-
-[Click here to view code image]
-
-template<typename T>
-[requires] !std::is_const_v<T>
-void outR (T& arg) {
-  ...
-}
-
-### 7.2.3 Passing by Forwarding Reference 
-
-One reason to use call-by-reference is to be able to perfect forward a parameter (see Section [[6.1]] on page [[91]]). But remember that when a forwarding reference is used, which is defined as an rvalue reference of a template parameter, special rules apply. Consider the following:
-
-[Click here to view code image]
-
-template<typename T>
-void passR (T&& arg)  [arg] declared as forwarding reference
-  ...
-}
-
-You can pass everything to a forwarding reference and, as usual when passing by reference, no copy gets created:
-
-[Click here to view code image]
-
-std::string s = "hi";\
-passR(s);                 // OK: [T] deduced as [std::string&] (also the type of [arg])
-passR(std::string("hi")); // OK: [T] deduced as [std::string], [arg] is [std::string&&]\
-passR(returnString());    // OK: [T] deduced as [std::string], [arg] is [std::string&&]\
-passR(std::move(s));      // OK: [T] deduced as [std::string], [arg] is [std::string&&]\
-passR(arr);               // OK: [T] deduced as [int(&)[4]] (also the type of [arg])
-
-However, the special rules for type deduction may result in some surprises:
-
-[Click here to view code image]
-
-std::string const c = "hi";\
-passR(c);                 //OK: [T] deduced as [std::string const&]\
-passR("hi");              //OK: [T] deduced as [char const(&)[3]] (also the type of [arg])
-int arr[4];\
-passR("hi");              //OK: [T] deduced as [int (&)[4]] (also the type of [arg])
-
-In each of these cases, inside `passR()` the parameter `arg` has a type that "knows" whether we passed an rvalue (to use move semantics) or a constant/nonconstant lvalue. This is the only way to pass an argument, such that it can be used to distinguish behavior for all of these three cases.
-
-This gives the impression that declaring a parameter as a forwarding reference is almost perfect. But beware, there is no free lunch.
-
-For example, this is the only case where the template parameter `T` implicitly can become a reference type. As a consequence, it might become an error to use `T` to declare a local object without initialization:
-
-[Click here to view code image]
-
-template<typename T>
-void passR(T&& arg)  [arg] is a forwarding reference
-  T x;    // for passed lvalues, [x] is a reference, which requires an initializer
-  ...
-\
-}
-\
-foo(42);  // OK: [T] deduced as int\
-int i;\
-foo(i);   // ERROR: [T] deduced as [int&], which makes the declaration of [x] in [passR()] invalid
-
-See Section [[15.6.2]] on page [[279]] for further details about how you can deal with this situation.
-
-### 7.3 Using **std::ref()** and **std::cref()** 
-
-Since C++11, you can let the caller decide, for a function template argument, whether to pass it by value or by reference. When a template is declared to take arguments by value, the caller can use `std::cref()` and `std::ref()`, declared in header file `<functional>`, to pass the argument by reference. For example:
-
-[Click here to view code image]
-
-template<typename T>
-void printT (T arg) {
-  ...
-}
-\
-std::string s = "hello";\
-printT(s);                //pass [s] by reference
-printT(std::cref(s));     // pass [s] "as if by reference"
-
-However, note that `std::cref()` does not change the handling of parameters in templates. Instead, it uses a trick: It wraps the passed argument `s` by an object that acts like a reference. In fact, it creates an object of type `std::reference_wrapper<>` referring to the original argument and passes this object by value. The wrapper more or less supports only one operation: an implicit type conversion back to the original type, yielding the original object.[7] So, whenever you have a valid operator for the passed object, you can use the reference wrapper instead. For example:
-
-[Click here to view code image]
-
-`basics/cref.cpp`
-
-#include <functional>  *[// for]* [std::cref()]\
-#include <string>
-#include <iostream>
-\
-void printString(std::string const& s)
-{
-  std::cout << s << '\n';\
-}
-\
-template<typename T>
-void printT (T arg)
-{
-  printString(arg);         *[// might convert]* [arg] *[back to]* [std::string]\
-}
-\
-int main()
-{
-  std::string s = "hello";\
-  printT(s);               *[// print]* [s] *[passed by value]*\
-  printT(std::cref(s));    *[// print]* [s] *[passed "as if by reference"]*\
-}
-
-The last call passes by value an object of type `std::reference_wrapper<string const>` to the parameter `arg`, which then passes and therefore converts it back to its underlying type `std::string`.
-
-Note that the compiler has to know that an implicit conversion back to the original type is necessary. For this reason, `std::ref()` and `std::cref()` usually work fine only if you pass objects through generic code. For example, directly trying to output the passed object of the generic type `T` will fail because there is no output operator defined for `std::reference_wrapper<>`:
-
-[Click here to view code image]
-
-template<typename T>
-void printV (T arg) {
-  std::cout << arg << '\n';\
-}
-...
-std::string s = "hello";\
-printV(s);                //OK
-printV(std::cref(s));     // ERROR: no operator [<<] for reference wrapper defined
-
-Also, the following fails because you can't compare a reference wrapper with a `char const*` or `std::string`:
-
-[Click here to view code image]
-
-template<typename T1, typename T2>
-[bool] isless(T1 arg1, T2 arg2)
-{
-   return arg1 < arg2;\
-}
-...
-std::string s = "hello";\
-if (isless(std::cref(s) < "world")) ...               //ERROR
-if (isless(std::cref(s) < std::string[(\"world"))) ...  //ERROR
-
-It also doesn't help to give `arg1` and `arg2` a common type `T`:
-
-[Click here to view code image]
-
-template<typename T>
-[bool] isless(T arg1, T arg2)
-{
-   return arg1 < arg2;\
-}
-
-because then the compiler gets conflicting types when trying to deduce `T` for `arg1` and `arg2`.
-
-Thus, the effect of class `std::reference_wrapper<>` is to be able to use a reference as a "first class object," which you can copy and therefore pass by value to function templates. You can also use it in classes, for example, to hold references to objects in containers. But you always finally need a conversion back to the underlying type.
-
-### 7.4 Dealing with String Literals and Raw Arrays 
-
-So far, we have seen the different effects for templates parameters when using string literals and raw arrays:
-
-• Call-by-value decays so that they become pointers to the element type.
-
-• Any form of call-by-reference does not decay so that the arguments become references that still refer to arrays.
-
-Both can be good and bad. When decaying arrays to pointers, you lose the ability to distinguish between handling pointers to elements from handling passed arrays. On the other hand, when dealing with parameters where string literals may be passed, not decaying can become a problem, because string literals of different size have different types. For example:
-
-[Click here to view code image]
-
-template<typename T>
-void foo (T const& arg1, T const& arg2)
-{
-  ...
-}
-\
-foo("hi", "guy");  //ERROR
-
-Here, `foo("hi","guy")` fails to compile, because `"hi"` has type `char const[3]`, while `"guy"` has type `char const[4]`, but the template requires them to have the same type `T`. Only if the string literals were to have the same length would such code compile. For this reason, it is strongly recommended to use string literals of different lengths in test cases.
-
-By declaring the function template `foo()` to pass the argument by value the call is possible:
-
-[Click here to view code image]
-
-template<typename T>
-void foo (T arg1, T arg2)
-{
-  ...
-}
-\
-foo("hi", "guy");      //compiles, but ...
-
-But, that doesn't mean that all problems are gone. Even worse, compile-time problems may have become run-time problems. Consider the following code, where we compare the passed argument using `operator==`:
-
-[Click here to view code image]
-
-template<typename T>
-void foo (T arg1, T arg2)
-{
-  if (arg1 == arg2) \
-    ...
-  }
-}
-\
-foo("hi", "guy");    //compiles, but ...
-
-As written, you have to know that you should interpret the passed character pointers as strings. But that's probably the case anyway, because the template also has to deal with arguments coming from string literals that have been decayed already (e.g., by coming from another function called by value or being assigned to an object declared with `auto`).
-
-Nevertheless, in many cases decaying is helpful, especially for checking whether two objects (both passed as arguments or one passed as argument and the other expecting the argument) have or convert to the same type. One typical usage is perfect forwarding. But if you want to use perfect forwarding, you have to declare the parameters as forwarding references. In those cases, you might explicitly decay the arguments using the type trait `std::decay<>()`. See the story of `std::make_pair()` in Section [[7.6]] on page [[120]] for a concrete example.
-
-Note that other type traits sometimes also implicitly decay, such as `std::common_type<>`, which yields the common type of two passed argument types (see Section [[1.3.3]] on page [[12]] and Section [[D.5]] on page [[732]]).
-
-### 7.4.1 Special Implementations for String Literals and Raw Arrays 
-
-You might have to distinguish your implementation according to whether a pointer or an array was passed. This, of course, requires that a passed array wasn't decayed yet.
-
-To distinguish these cases, you have to detect whether arrays are passed. Basically, there are two options:
-
-• You can declare template parameters so that they are only valid for arrays:
-
-[Click here to view code image]
-
-template<typename T, std::size_t L1, std::size_t L2>
-void foo(T (&arg1)[L1], T (&arg2)[L2])
-{
-  T* pa = arg1;  // decay [arg1]\
-  T* pb = arg2;  // decay [arg2]\
-  if (compareArrays(pa, L1, pb, L2)) {
-    ...
-  }
-}
-
-Here, `arg1` and `arg2` have to be raw arrays of the same element type `T` but with different sizes `L1` and `L2`. However, note that you might need multiple implementations to support the various forms of raw arrays (see Section [[5.4]] on page [[71]]).
-
-• You can use type traits to detect whether an array (or a pointer) was passed:
-
-[Click here to view code image]
-
-template<typename T,\
-         typename = std::enable_if_t<std::is_array_v<T>>>
-void foo (T&& arg1, T&& arg2)
-{
-  ...
-}
-
-Due to these special handling, often the best way to deal with arrays in different ways is simply to use different function names. Even better, of course, is to ensure that the caller of a template uses `std::vector` or `std::array`. But as long as string literals are raw arrays, we always have to take them into account.
-
-### 7.5 Dealing with Return Values 
-
-For return values, you can also decide between returning by value or by reference. However, returning references is potentially a source of trouble, because you refer to something that is out of your control. There are a few cases where returning references is common programming practice:
-
-• Returning elements of containers or strings (e.g., by `operator[]` or `front()`)
-
-• Granting write access to class members
-
-• Returning objects for chained calls (`operator<<` and `operator>>` for streams and `operator=` for class objects in general)
-
-In addition, it is common to grant read access to members by returning const references.
-
-Note that all these cases may cause trouble if used improperly. For example:
-
-[Click here to view code image]
-
-std::string\* s = [new] std::string[(\"whatever");
-auto& c = (\*s)[0];\
-delete s;\
-std::cout << c;   //run-time ERROR
-
-Here, we obtained a reference to an element of a string, but by the time we use that reference, the underlying string no longer exists (i.e., we created a *dangling reference*), and we have undefined behavior. This example is somewhat contrived (the experienced programmer is likely to notice the problem right away), but things easily become less obvious. For example:
-
-[Click here to view code image]
-
-auto s = std::make_shared<std::string>[(\"whatever");
-auto& c = (\*s)[0];\
-s.reset();
-std::cout << c;   //run-time ERROR
-
-We should therefore ensure that function templates return their result by value. However, as discussed in this chapter, using a template parameter `T` is no guarantee that it is not a reference, because `T` might sometimes implicitly be deduced as a reference:
-
-[Click here to view code image]
-
-template<typename T>
-T retR(T&& p)    // [p] is a forwarding reference
-{
-  return T;   // OOPS: returns by reference when called for lvalues
-}
-
-Even when `T` is a template parameter deduced from a call-by-value call, it might become a reference type when explicitly specifying the template parameter to be a reference:
-
-[Click here to view code image]
-
-template<typename T>
-T retV(T p)     //Note: [T] might become a reference
-{
-  return T;  // OOPS: returns a reference if [T] is a reference
-}
-\
-int x;\
-retV<int&>(x);  // [retT()] instantiated for [T] as [int&]
-
-To be safe, you have two options:
-
-• Use the type trait `std::remove_reference<>` (see Section [[D.4]] on page [[729]]) to convert type `T` to a nonreference:
-
-[Click here to view code image]
-
-template<typename T>
-typename std::remove_reference<T>::type retV(T p)
-{
-  return T;  // always returns by value
-}
-
-Other traits, such as `std::decay<>` (see Section [[D.4]] on page [[731]]), may also be useful here because they also implicitly remove references.
-
-• Let the compiler deduce the return type by just declaring the return type to be `auto` (since C++14; see Section [[1.3.2]] on page [[11]]), because `auto` always decays:
-
-[Click here to view code image]
-
-template<typename T>
-auto retV(T p)  // by-value return type deduced by compiler
-{
-  return T;  // always returns by value
-}
-
-### 7.6 Recommended Template Parameter Declarations 
-
-As we learned in the previous sections, we have very different ways to declare parameters that depend on template parameters:
-
-• Declare to pass the arguments by value:
-
-This approach is simple, it decays string literals and raw arrays, but it doesn't provide the best performance for large objects. Still the caller can decide to pass by reference using `std::cref()` and `std::ref()`, but the caller must be careful that doing so is valid.
-
-• Declare to pass the arguments by-reference:
-
-This approach often provides better performance for somewhat large objects, especially when passing
-
--- existing objects (lvalues) to lvalue references,
-
--- temporary objects (prvalues) or objects marked as movable (xvalue) to rvalue references,
-
--- or both to forwarding references.
-
-Because in all these cases the arguments don't decay, you may need special care when passing string literals and other raw arrays. For forwarding references, you also have to beware that with this approach template parameters implicitly can deduce to reference types.
-
-##### General Recommendations 
-
-With these options in mind, for function templates we recommend the following:
-
-1. By default, declare parameters to be passed by value. This is simple and usually works even with string literals. The performance is fine for small arguments and for temporary or movable objects. The caller can sometimes use `std::ref()` and `std::cref()` when passing existing large objects (lvalues) to avoid expensive copying.
-
-2. If there are good reasons, do otherwise:
-
--- If you need an *out* or *inout* parameter, which returns a new object or allows to modify an argument to/for the caller, pass the argument as a nonconstant reference (unless you prefer to pass it via a pointer). However, you might consider disabling accidentally accepting `const` objects as discussed in Section [[7.2.2]] on page [[110]].
-
--- If a template is provided to *forward* an argument, use perfect forwarding. That is, declare parameters to be forwarding references and use `std::forward<>()` where appropriate. Consider using `std::decay<>` or `std::common_type<>` to "harmonize" the different types of string literals and raw arrays.
-
--- If *performance* is key and it is expected that copying arguments is expensive, use constant references. This, of course, does not apply if you need a local copy anyway.
-
-3. If you know better, don't follow these recommendations. However, do not make intuitive assumptions about performance. Even experts fail if they try. Instead: Measure!
-
-##### Don't Be Over-Generic 
-
-Note that, in practice, function templates often are not for arbitrary types of arguments. Instead, some constraints apply. For example, you may know that only vectors of some type are passed. In this case, it is better not to declare such a function too generically, because, as discussed, surprising side effects may occur. Instead, use the following declaration:
-
-[Click here to view code image]
-
-template<typename T>
-void printVector (std::vector<T> const& v)
-{
-  ...
-}
-
-With this declaration of parameter `v` in `printVector()`, we can be sure that the passed `T` can't become a reference because vectors can't use references as element types. Also, it is pretty clear that passing a vector by value almost always can become expensive because the copy constructor of `std::vector<>` creates a copy of the elements. For this reason, it is probably never useful to declare such a vector parameter to be passed by value. If we declare parameter `v` just as having type `T` deciding, between call-by-value and call-by-reference becomes less obvious.
-
-### The **`std::make_pair()`** Example 
-
-`std::make_pair<>()` is a good example to demonstrate the pitfalls of deciding a parameter passing mechanism. It is a convenience function template in the C++ standard library to create `std::pair<>` objects using type deduction. Its declaration changed through different versions of the C++ standard:
-
-• In the first C++ standard, C++98, `make_pair<>()` was declared inside namespace `std` to use call-by-reference to avoid unnecessary copying:
-
-[Click here to view code image]
-
-template<typename T1, typename T2>
-pair<T1,T2> make_pair (T1 const& a, T2 const& b)
-{
-  return pair<T1,T2>(a,b);
-}
-
-This, however, almost immediately caused significant problems when using pairs of string literals or raw arrays of different size.[8]
-
-• As a consequence, with C++03 the function definition was changed to use call-by-value:
-
-[Click here to view code image]
-
-template<typename T1, typename T2>
-pair<T1,T2> make_pair (T1 a, T2 b)
-{
-  return pair<T1,T2>(a,b);
-}
-
-As you can read in the rationale for the issue resolution, "*it appeared that this was a much smaller change to the standard than the other two suggestions, and any efficiency concerns were more than offset by the advantages of the solution*."
-
-• However, with C++11, `make_pair()` had to support move semantics, so that the arguments had to become forwarding references. For this reason, the definition changed roughly again as follows:
-
-[Click here to view code image]
-
-template<typename T1, typename T2>
-[constexpr] pair[<typename] decay<T1>::type, typename decay<T2>::type>
-make_pair (T1&& a, T2&& b)
-{
-   return pair[<typename] decay<T1>::type,\
-               typename decay<T2>::type>(forward<T1>(a), forward<T2>(b));
-}
-
-The complete implementation is even more complex: To support `std::ref()` and `std::cref()`, the function also unwraps instances of `std::reference_wrapper` into real references.
-
-The C++ standard library now perfectly forwards passed arguments in many places in similar way, often combined with using `std::decay<>`.
-
-### 7.7 Summary 
-
-• When testing templates, use string literals of different length.
-
-• Template parameters passed by value decay, while passing them by reference does not decay.
-
-• The type trait `std::decay<>` allows you to decay parameters in templates passed by reference.
-
-• In some cases `std::cref()` and `std::ref()` allow you to pass arguments by reference when function templates declare them to be passed by value.
-
-• Passing template parameters by value is simple but may not result in the best performance.
-
-• Pass parameters to function templates by value unless there are good reasons to do otherwise.
-
-• Ensure that return values are usually passed by value (which might mean that a template parameter can't be specified directly as a return type).
-
-• Always measure performance when it is important. Do not rely on intuition; it's probably wrong.
-
-^[1]^ A constant rvalue reference `X const&&` is also possible but there is no established semantic meaning for it.
-
-^[2]^ Note that since C++17 you can pass temporary entities (rvalues) by value even if no copy or move constructor is available (see Section [[B.2.1]] on page [[676]]). So, since C++17 the additional constraint is that copying *for lvalues* is not possible.
-
-^[3]^ The implementation of the string class might itself have some optimizations to make copying cheaper. One is the *small string optimization* (*SSO*), using some memory directly inside the object to hold the value without allocating memory as long as the value is not too long. Another is the *copy-on-write* optimization, which creates a copy using the same memory as the source as long as neither source nor the copy is modified. However, the copy-on-write optimization has significant drawbacks in multithreaded code. For this reason, it is forbidden for standard strings since C++11.
-
-^[4]^ The term *decay* comes from C, and also applies to the type conversion from a function to a function pointer (see Section [[11.1.1]] on page [[159]]).
-
-^[5]^ The use of `const_cast` is another, more explicit, way to modify the referenced object.
-
-^[6]^ When passing `std::move(c)`, `std::move()` first converts `c` to `std::string const&&`, which then has the effect that `T` is deduced as `std::string const`.
-
-^[7]^ You can also call `get()` on a reference wrapper and use it as function object.
-
-^[8]^ See C++ library issue 181 [LibIssue181] for details.
-
-
-
-## Chapter 8 
-
-## Compile-Time Programming 
-
-C++ has always included some simple ways to compute values at compile time. Templates considerably increased the possibilities in this area, and further evolution of the language has only added to this toolbox.
-
-In the simple case, you can decide whether or not to use certain or to choose between different template code. But the compiler even can compute the outcome of control flow at compile time, provided all necessary input is available.
-
-In fact, C++ has multiple features to support compile-time programming:
-
-• Since before C++98, templates have provided the ability to compute at compile time, including using loops and execution path selection. (However, some consider this an "abuse" of template features, e.g., because it requires nonintuitive syntax.)
-
-• With partial specialization we can choose at compile time between different class template implementations depending on specific constraints or requirements.
-
-• With the SFINAE principle, we can allow selection between different function template implementations for different types or different constraints.
-
-• In C++11 and C++14, compile-time computing became increasingly better supported with the `constexpr` feature using "intuitive" execution path selection and, since C++14, most statement kinds (including `for` loops, `switch` statements, etc.).
-
-• C++17 introduced a "compile-time `if`" to discard statements depending on compile-time conditions or constraints. It works even outside of templates.
-
-This chapter introduces these features with a special focus on the role and context of templates.
-
-### 8.1 Template Metaprogramming 
-
-Templates are instantiated at compile time (in contrast to dynamic languages, where genericity is handled at run time). It turns out that some of the features of C++ templates can be combined with the instantiation process to produce a sort of primitive recursive "programming language" within the C++ language itself.[1] For this reason, templates can be used to "compute a program." [Chapter [23]] will cover the whole story and all features, but here is a short example of what is possible.
-
-The following code finds out at compile time whether a given number is a prime number:
-
-[Click here to view code image]
-
-`basics/isprime.hpp`
-
-template<[unsigned] p, [unsigned] d>  *[// p: number to check, d: current divisor]*\
-struct DoIsPrime {
-  [static constexpr bool] value = (p%d != 0) && DoIsPrime<p,d-1>::value;\
-};
-\
-template<[unsigned] p>              *[// end recursion if divisor is 2]*\
-struct DoIsPrime<p,2> {
-  [static constexpr bool] value = (p%2 != 0);
-};
-\
-template<[unsigned] p>              *[// primary template]*\
-struct IsPrime {
-  *[// start recursion with divisor from p/2:]*\
-  [static constexpr bool] value = DoIsPrime<p,p/2>::value;\
-};
-\
-*[// special cases (to avoid endless recursion with template instantiation):]*\
-template<>
-struct IsPrime<0>  value = [false]; };
-template<>
-struct IsPrime<1>  value = [false]; };
-template<>
-struct IsPrime<2>  value = [true]; };
-template<>
-struct IsPrime<3>  value = [true]; };
-
-The `IsPrime<>` template returns in member `value` whether the passed template parameter `p` is a prime number. To achieve this, it instantiates `DoIsPrime<>`, which recursively expands to an expression checking for each divisor `d` between `p/2` and `2` whether the divisor divides `p` without remainder.
-
-For example, the expression
-
-IsPrime<9>::value
-
-expands to
-
-DoIsPrime<9,4>::value
-
-which expands to
-
-[Click here to view code image]
-
-9%4!=0 && DoIsPrime<9,3>::value
-
-which expands to
-
-[Click here to view code image]
-
-9%4!=0 && 9%3!=0 && DoIsPrime<9,2>::value
-
-which expands to
-
-[Click here to view code image]
-
-9%4!=0 && 9%3!=0 && 9%2!=0
-
-which evaluates to `false`, because `9%3` is `0`.
-
-As this chain of instantiations demonstrates:
-
-• We use recursive expansions of `DoIsPrime<>` to iterate over all divisors from `p/2` down to `2` to find out whether any of these divisors divide the given integer exactly (i.e., without remainder).
-
-• The partial specialization of `DoIsPrime<>` for `d` equal to `2` serves as the criterion to end the recursion.
-
-Note that all this is done at compile time. That is,
-
-IsPrime<9>::value
-
-expands to `false` at compile time.
-
-The template syntax is arguably clumsy, but code similar to this has been valid since C++98 (and earlier) and has proven useful for quite a few libraries.[2]
-
-See [Chapter [23]] for details.
-
-### 8.2 Computing with **constexpr** 
-
-C++11 introduced a new feature, `constexpr`, that greatly simplifies various forms of compile-time computation. In particular, given proper input, a `constexpr` function can be evaluated at compile time. While in C++11 `constexpr` functions were introduced with stringent limitations (e.g., each `constexpr` function definition was essentially limited to consist of a `return` statement), most of these restrictions were removed with C++14. Of course, successfully evaluating a `constexpr` function still requires that all computational steps be possible and valid at compile time: Currently, that excludes things like heap allocation or throwing exceptions.
-
-Our example to test whether a number is a prime number could be implemented as follows in C++11:
-
-[Click here to view code image]
-
-`basics/isprime11.hpp`
-
-[constexpr bool]\
-doIsPrime [(unsigned] p, [unsigned] d)  *[// p: number to check, d: current divisor]*\
-{
-  return d!=2 ? (p%d!=0) && doIsPrime(p,d-1) *[// check this and smaller divisors]*\
-              : (p%2!=0);                    *[// end recursion if divisor is 2]*\
-\
-}
-\
-[constexpr bool] isPrime [(unsigned] p)
-{
-  return p < 4 ? !(p<2)               *[// handle special cases]*\
-               : doIsPrime(p,p/2);    *[// start recursion with divisor from p/2]*\
-}
-
-Due to the limitation of having only one statement, we can only use the conditional operator as a selection mechanism, and we still need recursion to iterate over the elements. But the syntax is ordinary C++ function code, making it more accessible than our first version relying on template instantiation.
-
-With C++14, `constexpr` functions can make use of most control structures available in general C++ code. So, instead of writing unwieldy template code or somewhat arcane one-liners, we can now just use a plain `for` loop:
-
-[Click here to view code image]
-
-`basics/isprime14.hpp`
-
-[constexpr bool] isPrime [(unsigned int] p)
-{
-  [for] [(unsigned int] d=2; d<=p/2; ++d) {
-    if (p % d == 0) {
-      [return false];  *[// found divisor without remainder]*\
-    }
-  }
-  return p > 1;     *[// no divisor without remainder found]*\
-}
-
-With both the C++11 and C++14 versions of our `constexpr isPrime()` implementations, we can simply call
-
-isPrime(9)
-
-to find out whether `9` is a prime number. Note that it can do so at compile time, but it need not necessarily do so. In a context that requires a compile-time value (e.g., an array length or a nontype template argument), the compiler will attempt to evaluate a call to a `constexpr` function at compile time and issue an error if that is not possible (since a constant must be produced in the end). In other contexts, the compiler may or may not attempt the evaluation at compile time[3] but if such an evaluation fails, no error is issued and the call is left as a run-time call instead.
-
-For example:
-
-[Click here to view code image]
-
-[constexpr bool] b1 = isPrime(9);   // evaluated at compile time
-
-will compute the value at compile time. The same is true with
-
-[Click here to view code image]
-
-[const bool] b2 = isPrime(9);       // evaluated at compile time if in namespace scope
-
-provided `b2` is defined globally or in a namespace. At block scope, the compiler can decide whether to compute it at compile or run time.[4] This, for example, is also the case here:
-
-[Click here to view code image]
-
-[bool] fiftySevenIsPrime() {
-  return isPrime(57);             // evaluated at compile or running time
-}
-
-the compiler may or may not evaluate the call to `isPrime` at compile time.
-
-On the other hand:
-
-[Click here to view code image]
-
-int x;\
-...
-std::cout << isPrime(x);           // evaluated at run time
-
-will generate code that computes at run time whether `x` is a prime number.
-
-### 8.3 Execution Path Selection with Partial Specialization 
-
-An interesting application of a compile-time test such as `isPrime()` is to use partial specialization to select at compile time between different implementations.
-
-For example, we can choose between different implementations depending on whether a template argument is a prime number:
-
-[Click here to view code image]
-
-*[// primary helper template:]*\
-template<int SZ, [bool] = isPrime(SZ)>
-struct Helper;\
-\
-*[// implementation if]* SZ *[is not a prime number:]*\
-template<int SZ>
-struct Helper<SZ, [false]>
-{
-\
-  ...
-};
-\
-*[// implementation if]* SZ *[is a prime number:]*\
-template<int SZ>
-struct Helper<SZ, [true]>
-{
-\
-  ...
-};
-\
-template<typename T, std::size_t SZ>
-[long] foo (std::array<T,SZ> const& coll)
-{
-  Helper<SZ> h;   *[// implementation depends on whether array has prime number as size]*\
-  ...
-\
-}
-
-Here, depending on whether the size of the `std::array<>` argument is a prime number, we use two different implementations of class `Helper<>`. This kind of application of partial specialization is broadly applicable to select among different implementations of a function template depending on properties of the arguments it's being invoked for.
-
-Above, we used two partial specializations to implement the two possible alternatives. Instead, we can also use the primary template for one of the alternatives (the default) case and partial specializations for any other special case:
-
-[Click here to view code image]
-
-*[// primary helper template (used if no specialization fits):]*\
-template<int SZ, [bool] = isPrime(SZ)>
-struct Helper\
-{
-\
-  ...
-};
-\
-*[// special implementation if]* SZ *[is a prime number:]*\
-template<int SZ>
-struct Helper<SZ, [true]>
-{
-\
-  ...
-};
-
-Because function templates do not support partial specialization, you have to use other mechanisms to change function implementation based on certain constraints. Our options include the following:
-
-• Use classes with static functions,
-
-• Use `std::enable_if`, introduced in Section [[6.3]] on page [[98]],
-
-• Use the *SFINAE* feature, which is introduced next, or
-
-• Use the compile-time `if` feature, available since C++17, which is introduced below in Section [[8.5]] on page [[135]].
-
-[Chapter [20]] discusses techniques for selecting a function implementation based on constraints.
-
-### 8.4 SFINAE (Substitution Failure Is Not An Error) 
-
-In C++ it is pretty common to overload functions to account for various argument types. When a compiler sees a call to an overloaded function, it must therefore consider each candidate separately, evaluating the arguments of the call and picking the candidate that matches best (see also [Appendix [C]] for some details about this process).
-
-In cases where the set of candidates for a call includes function templates, the compiler first has to determine what template arguments should be used for that candidate, then substitute those arguments in the function parameter list and in its return type, and then evaluate how well it matches (just like an ordinary function). However, the substitution process could run into problems: It could produce constructs that make no sense. Rather than deciding that such meaningless substitutions lead to errors, the language rules instead say that candidates with such substitution problems are simply ignored.
-
-We call this principle *SFINAE* (pronounced like *sfee-nay*), which stands for "substitution failure is not an error."
-
-Note that the substitution process described here is distinct from the on-demand instantiation process (see Section [[2.2]] on page [[27]]): The substitution may be done even for potential instantiations that are not needed (so the compiler can evaluate whether indeed they are unneeded). It is a substitution of the constructs appearing directly in the declaration of the function (but not its body).
-
-Consider the following example:
-
-[Click here to view code image]
-
-`basics/len1.hpp`
-
-*[// number of elements in a raw array:]*\
-template<typename T, [unsigned] N>
-std::size_t len (T(&)[N])
-{
-  return N;\
-}
-\
-*[// number of elements for a type having]* size_type*[:]*\
-template<typename T>
-typename T::size_type len (T const& t)
-{
-  return t.size();
-}
-
-Here, we define two function templates `len()` taking one generic argument:[5]
-
-1. The first function template declares the parameter as `T(&)[N]`, which means that the parameter has to be an array of `N` elements of type `T`.
-
-2. The second function template declares the parameter simply as `T`, which places no constraints on the parameter but returns type `T::size_type`, which requires that the passed argument type has a corresponding member `size_type`.
-
-When passing a raw array or string literals, only the function template for raw arrays matches:
-
-[Click here to view code image]
-
-int a[10];\
-std::cout << len(a);       // OK: only [len()] for array matches
-std::cout << len[(\"tmp");   //OK: only [len()] for array matches
-
-According to its signature, the second function template also matches when substituting (respectively) `int[10]` and `char const[4]` for `T`, but those substitutions lead to potential errors in the return type `T::size_type`. The second template is therefore ignored for these calls.
-
-When passing a `std::vector<>`, only the second function template matches:
-
-[Click here to view code image]
-
-std::vector<int> v;\
-std::cout << len(v);   // OK: only [len()] for a type with [size_type] matches
-
-When passing a raw pointer, neither of the templates match (without a failure). As a result, the compiler will complain that no matching `len()` function is found:
-
-[Click here to view code image]
-
-int\* p;\
-std::cout << len(p);   // ERROR: no matching [len()] function found
-
-Note that this differs from passing an object of a type having a `size_type` member, but no `size()` member function, as is, for example, the case for `std::allocator<>`:
-
-[Click here to view code image]
-
-std::allocator<int> x;\
-std::cout << len(x);   // ERROR: [len()] function found, but can't [size()]
-
-When passing an object of such a type, the compiler finds the second function template as matching function template. So instead of an error that no matching `len()` function is found, this will result in a compile-time error that calling `size()` for a `std::allocator<int>` is invalid. This time, the second function template is not ignored.
-
-Ignoring a candidate when substituting its return type is meaningless can cause the compiler to select another candidate whose parameters are a worse match. For example:
-
-[Click here to view code image]
-
-`basics/len2.hpp`
-
-*[// number of elements in a raw array:]*\
-template<typename T, [unsigned] N>
-std::size_t len (T(&)[N])
-{
-  return N;\
-}
-\
-*[// number of elements for a type having]* size_type*[:]*\
-template<typename T>
-typename T::size_type len (T const& t)
-{
-  return t.size();
-}
-\
-*[// fallback for all other types:]*\
-std::size_t len (...)
-{
-  return 0;\
-}
-
-Here, we also provide a general `len()` function that always matches but has the worst match (match with *ellipsis* (`…`) in overload resolution (see Section [[C.2]] on page [[682]]).
-
-So, for raw arrays and vectors, we have two matches where the specific match is the better match. For pointers, only the fallback matches so that the compiler no longer complains about a missing `len()` for this call.[6] But for the allocator, the second and third function templates match, with the second function template as the better match. So, still, this results in an error that no `size()` member function can be called:
-
-[Click here to view code image]
-
-int a[10];\
-std::cout << len(a);        // OK: [len()] for array is best match
-std::cout << len[(\"tmp");    //OK: [len()] for array is best match
-\
-`std::vector<int> v; std::cout << len(v);`        // OK: `len()` for a type with `size_type` is best match
-\
-int\* p;\
-std::cout << len(p);        // OK: only fallback [len()] matches
-\
-`std::allocator<int> x; std::cout << len(x);`        // ERROR: 2nd `len()` function matches best,
-                            //        but can't call `size()` for `x`
-
-See Section [[15.7]] on page [[284]] for more details about SFINAE and Section [[19.4]] on page [[416]] about some applications of SFINAE.
-
-##### SFINAE and Overload Resolution 
-
-Over time, the SFINAE principle has become so important and so prevalent among template designers that the abbreviation has become a verb. We say "we *SFINAE out* a function" if we mean to apply the SFINAE mechanism to ensure that function templates are ignored for certain constraints by instrumenting the template code to result in invalid code for these constraints. And whenever you read in the C++ standard that a function template "*shall not participate in overload resolution unless...*" it means that SFINAE is used to "SFINAE out" that function template for certain cases.
-
-For example, class `std::thread` declares a constructor:
-
-[Click here to view code image]
-
-namespace std {
-  class thread {
-    public:
-      ...
-      template<typename F, typename... Args>
-        [explicit] thread(F&& f, Args&&... args);
-    ...
-  };
-}
-
-with the following remark:
-
-*Remarks:* This constructor shall not participate in overload resolution if `decay_t<F>` is the same type as `std::thread`.
-
-This means that the template constructor is ignored if it is called with a `std::thread` as first and only argument. The reason is that otherwise a member template like this sometimes might better match than any predefined copy or move constructor (see Section [[6.2]] on page [[95]] and Section [[16.2.4]] on page [[333]] for details). By *SFINAE'ing out* the constructor template when called for a thread, we ensure that the predefined copy or move constructor is always used when a thread gets constructed from another thread.[7]
-
-Applying this technique on a case-by-case basis can be unwieldy. Fortunately, the standard library provides tools to disable templates more easily. The best-known such feature is `std::enable_if<>`, which was introduced in Section [[6.3]] on page [[98]]. It allows us to disable a template just by replacing a type with a construct containing the condition to disable it.
-
-As a consequence, the real declaration of `std::thread` typically is as follows:
-
-[Click here to view code image]
-
-namespace std {
-  class thread {
-    public:
-      ...
-      template<typename F, typename... Args,\
-               typename = std::enable_if_t<!std::is_same_v<std::decay_t<F>,\
-                                                           thread>>>
-        [explicit] thread(F&& f, Args&&... args);
-      ...
-  `}; }`
-
-See Section [[20.3]] on page [[469]] for details about how `std::enable_if<>` is implemented, using partial specialization and SFINAE.
-
-#### 8.4.1 Expression SFINAE with **decltype** 
-
-It's not always easy to find out and formulate the right expression to *SFINAE out* function templates for certain conditions.
-
-Suppose, for example, that we want to ensure that the function template `len()` is ignored for arguments of a type that has a `size_type` member but not a `size()` member function. Without any form of requirements for a `size()` member function in the function declaration, the function template is selected and its ultimate instantiation then results in an error:
-
-[Click here to view code image]
-
-template<typename T>
-typename T::size_type len (T const& t)
-{
-  return t.size();
-}
-\
-`std::allocator<int> x; std::cout << len(x) << ’\n`';        //ERROR: `len()` selected, but `x` has no `size()`
-
-There is a common pattern or idiom to deal with such a situation:
-
-• Specify the return type with the *trailing return type syntax* (use `auto` at the front and `->` before the return type at the end).
-
-• Define the return type using `decltype` and the comma operator.
-
-• Formulate all expressions that must be valid at the beginning of the comma operator (converted to `void` in case the comma operator is overloaded).
-
-• Define an object of the real return type at the end of the comma operator.
-
-For example:
-
-[Click here to view code image]
-
-template<typename T>
-auto len (T const& t) -> decltype( [(void])(t.size()), T::size_type() )
-{
-    return t.size();
-}
-
-Here the return type is given by
-
-[Click here to view code image]
-
-decltype( [(void])(t.size)(), T::size_type() )
-
-The operand of the `decltype` construct is a comma-separated list of expressions, so that the last expression `T::size_type()` yields a value of the desired return type (which `decltype` uses to convert into the return type). Before the (last) comma, we have the expressions that must be valid, which in this case is just `t.size()`. The cast of the expression to `void` is to avoid the possibility of a user-defined comma operator overloaded for the type of the expressions.
-
-Note that the argument of `decltype` is an *unevaluated operand*, which means that you, for example, can create "dummy objects" without calling constructors, which is discussed in Section [[11.2.3]] on page [[166]].
-
-### 8.5 Compile-Time **if** 
-
-Partial specialization, SFINAE, and `std::enable_if` allow us to enable or disable templates as a whole. C++17 additionally introduces a compile-time `if` statement that allows is to enable or disable specific statements based on compile-time conditions. With the syntax `if constexpr(`... `)`, the compiler uses a compile-time expression to decide whether to apply the *then* part or the *else* part (if any).
-
-As a first example, consider the variadic function template `print()` introduced in Section [[4.1.1]] on page [[55]]. It prints its arguments (of arbitrary types) using recursion. Instead of providing a separate function to end the recursion, the *constexpr if* feature allows us to decide locally whether to continue the recursion:[8]
-
-[Click here to view code image]
-
-template<typename T, typename... Types>
-void print (T const& firstArg, Types const&... args)
-{
-  std::cout << firstArg << '\n';\
-  [if constexpr][(sizeof]...(args) > 0) {
-    print(args...);   //code only available if `sizeof…(args)>0` (since C++17) `   } }`
-
-Here, if `print()` is called for one argument only, `args` becomes an empty parameter pack so that `sizeof…(args)` becomes 0. As a result, the recursive call of `print()` becomes a *discarded statement*, for which the code is not instantiated. Thus, a corresponding function is not required to exist and the recursion ends.
-
-The fact that the code is not instantiated means that only the first translation phase (the *definition time*) is performed, which checks for correct syntax and names that don't depend on template parameters (see Section [[1.1.3]] on page [[6]]). For example:
-
-[Click here to view code image]
-
-template<typename T>
-void foo(T t)
-{
-  [if constexpr](std::is_integral_v<T>) {
-    if (t > 0) {
-      foo(t-1);   // OK
-    }
-  }
-  [else] {
-    undeclared(t);       // error if not declared and not discarded (i.e. [T] is not integral)
-    undeclared();        // error if not declared (even if discarded)
-    [static_assert]([false], "no integral");    // always asserts (even if discarded)
-    [static_assert](!std::is_integral_v<T>, "no integral");        //OK
-  }
-}
-
-Note that `if constexpr` can be used in any function, not only in templates. We only need a compile-time expression that yields a Boolean value. For example:
-
-[Click here to view code image]
-
-int main()
-{
-    [if constexpr](std::numeric_limits[<char]>::is_signed {
-      foo(42);        // OK
-  }
-  [else] {
-    undeclared(42);        // error if
-    [undeclared()] not declared
-    [static_assert]([false], "unsigned");          // always asserts (even if discarded)
-    [static_assert](!std::numeric_limits<[char]>::is_signed,\
-                  `"char is unsigned`\");        //OK
-  `} }`
-
-With this feature, we can, for example, use our `isPrime()` compile-time function, introduced in Section [[8.2]] on page [[125]], to perform additional code if a given size is not a prime number:
-
-[Click here to view code image]
-
-template<typename T, std::size_t SZ>
-void foo (std::array<T,SZ> const& coll)
-{
-  [if constexpr](!isPrime(SZ)) {
-    ...    //special additional handling if the passed array has no prime number as size
-  `}`\
-  ...
-}
-
-See Section [[14.6]] on page [[263]] for further details.
-
-### 8.6 Summary 
-
-• Templates provide the ability to compute at compile time (using recursion to iterate and partial specialization or operator `?:` for selections).
-
-• With `constexpr` functions, we can replace most compile-time computations with "ordinary functions" that are callable in compile-time contexts.
-
-• With partial specialization, we can choose between different implementations of class templates based on certain compile-time constraints.
-
-• Templates are used only if needed *and* substitutions in function template declarations do not result in invalid code. This principle is called SFINAE (substitution failure is not an error).
-
-• SFINAE can be used to provide function templates only for certain types and/or constraints.
-
-• Since C++17, a compile-time `if` allows us to enable or discard statements according to compile-time conditions (even outside templates).
-
-^[1]^ In fact, it was Erwin Unruh who first found it out by presenting a program computing prime numbers at compile time. See Section [[23.7]] on page [[545]] for details.
-
-^[2]^ Before C++11, it was common to declare the `value` members as enumerator constants instead of static data members to avoid the need to have an out-of-class definition of the static data member (see Section [[23.6]] on page [[543]] for details). For example:
-
-[Click here to view code image]
-
-enum ;
-
-^[3]^ At the time of writing this book in 2012\"fn\">^[4]^ Theoretically, even with `constexpr`, the compiler can decide to compute the initial value of `b` at run time.
-
-^[5]^ We don't name this function `size()` because we want to avoid a naming conflict with the C++ standard library, which defines a standard function template `std::size()` since C++17.
-
-^[6]^ In practice, such a fallback function would usually provide a more useful default, throw an exception, or contain a static assertion to result in a useful error message.
-
-^[7]^ Since the copy constructor for class `thread` is deleted, this also ensures that copying is forbidden.
-
-^[8]^ Although the code reads `if constexpr`, the feature is called *constexpr if*, because it is the "constexpr" form of `if` (and for historical reasons).
-
-
-
-## Chapter 9 
-
-## Using Templates in Practice 
-
-Template code is a little different from ordinary code. In some ways templates lie somewhere between macros and ordinary (nontemplate) declarations. Although this may be an oversimplification, it has consequences not only for the way we write algorithms and data structures using templates but also for the day-to-day logistics of expressing and analyzing programs involving templates.
-
-In this chapter we address some of these practicalities without necessarily delving into the technical details that underlie them. Many of these details are explored in [Chapter [14]]. To keep the discussion simple, we assume that our C++ compilation systems consist of fairly traditional compilers and linkers (C++ systems that don't fall in this category are rare).
-
-### 9.1 The Inclusion Model 
-
-There are several ways to organize template source code. This section presents the most popular approach: the inclusion model.
-
-#### 9.1.1 Linker Errors 
-
-Most C and C++ programmers organize their nontemplate code largely as follows:
-
-• Classes and other types are entirely placed in *header files*. Typically, this is a file with a `.hpp` (or `.H`, `.h`, `.hh`, `.hxx`) filename extension.
-
-• For global (noninline) variables and (noninline) functions, only a declaration is put in a header file, and the definition goes into a file compiled as its own translation unit. Such a *CPP file* typically is a file with a `.cpp` (or `.C`, `.c`, `.cc`, or `.cxx`) filename extension.
-
-This works well: It makes the needed type definition easily available throughout the program and avoids duplicate definition errors on variables and functions from the linker.
-
-With these conventions in mind, a common error about which beginning template programmers complain is illustrated by the following (erroneous) little program. As usual for "ordinary code," we declare the template in a header file:
-
-[Click here to view code image]
-
-*basics/myfirst.hpp*
-
-[#ifndef] MYFIRST_HPP\
-[#define] MYFIRST_HPP\
-\
-*[// declaration of template]*\
-template<typename T>
-void printTypeof (T const&);
-\
-[#endif]   *[//MYFIRST][\_][HPP]*
-
-`printTypeof()` is the declaration of a simple auxiliary function that prints some type information. The implementation of the function is placed in a CPP file:
-
-[Click here to view code image]
-
-*basics/myfirst.cpp*
-
-#include <iostream>
-#include <typeinfo>
-#include "myfirst.hpp"\
-\
-*[// implementation/definition of template]*\
-template<typename T>
-void printTypeof (T const& x)
-{
-    std::cout << [typeid](x).name() << '\n';\
-}
-
-The example uses the `typeid` operator to print a string that describes the type of the expression passed to it. It returns an lvalue of the static type `std::type_info`, which provides a member function `name()` that shows the types of some expressions. The C++ standard doesn't actually say that `name()` must return something meaningful, but on good C++ implementations, you should get a string that gives a good description of the type of the expression passed to `typeid`.[1]
-
-Finally, we use the template in another CPP file, into which our template declaration is `#include`d:
-
-[Click here to view code image]
-
-*basics/myfirstmain.cpp*
-
-#include "myfirst.hpp"\
-\
-*[// use of the template]*\
-int main()
-{
-    [double] ice = 3.0;\
-    printTypeof(ice);    *[// call function template for type]* [double]\
-}
-
-A C++ compiler will most likely accept this program without any problems, but the linker will probably report an error, implying that there is no definition of the function `printTypeof()`.
-
-The reason for this error is that the definition of the function template `printTypeof()` has not been instantiated. In order for a template to be instantiated, the compiler must know which definition should be instantiated and for what template arguments it should be instantiated. Unfortunately, in the previous example, these two pieces of information are in files that are compiled separately. Therefore, when our compiler sees the call to `printTypeof()` but has no definition in sight to instantiate this function for `double`, it just assumes that such a definition is provided elsewhere and creates a reference (for the linker to resolve) to that definition. On the other hand, when the compiler processes the file `myfirst.cpp`, it has no indication at that point that it must instantiate the template definition it contains for specific arguments.
-
-#### 9.1.2 Templates in Header Files 
-
-The common solution to the previous problem is to use the same approach that we would take with macros or with inline functions: We include the definitions of a template in the header file that declares that template.
-
-That is, instead of providing a file `myfirst.cpp`, we rewrite `myfirst.hpp` so that it contains all template declarations *and* template definitions:
-
-[Click here to view code image]
-
-*basics/myfirst2.hpp*
-
-[#ifndef] MYFIRST_HPP\
-[#define] MYFIRST_HPP\
-\
-#include <iostream>
-#include <typeinfo>
-\
-*[// declaration of template]*\
-template<typename T>
-void printTypeof (T const&);
-\
-*[// implementation/definition of template]*\
-template<typename T>
-void printTypeof (T const& x)
-{
-    std::cout << [typeid](x).name() << '\n'; }
-\
-[#endif]   *[//MYFIRST][\_][HPP]*
-
-This way of organizing templates is called the *inclusion model*. With this in place, you should find that our program now correctly compiles, links, and executes.
-
-There are a few observations we can make at this point. The most notable is that this approach has considerably increased the cost of including the header file `myfirst.hpp`. In this example, the cost is not the result of the size of the template definition itself but the result of the fact that we must also include the headers used by the definition of our template---in this case `<iostream>` and `<typeinfo>`. You may find that this amounts to tens of thousands of lines of code because headers like `<iostream>` contain many template definitions of their own.
-
-This is a real problem in practice because it considerably increases the time needed by the compiler to compile significant programs. We will therefore examine some possible ways to approach this problem, including precompiled headers (see Section [[9.3]] on page [[141]]) and the use of explicit template instantiation (see Section [[14.5]] on page [[260]]).
-
-Despite this build-time issue, we do recommend following this inclusion model to organize your templates when possible until a better mechanism becomes available. At the time of writing this book in 2017, such a mechanism is in the works: *modules*, which is introduced in Section [[17.11]] on page [[366]]. They are a language mechanism that allows the programmer to more logically organize code in such a way that a compiler can separately compile all declarations and then efficiently and selectively import the processed declarations whenever needed.
-
-Another (more subtle) observation about the inclusion approach is that noninline function templates are distinct from inline functions and macros in an important way: They are not expanded at the call site. Instead, when they are instantiated, they create a new copy of a function. Because this is an automatic process, a compiler could end up creating two copies in two different files, and some linkers could issue errors when they find two distinct definitions for the same function. In theory, this should not be a concern of ours: It is a problem for the C++ compilation system to accommodate. In practice, things work well most of the time, and we don't need to deal with this issue at all. For large projects that create their own library of code, however, problems occasionally show up. A discussion of instantiation schemes in [Chapter [14]] and a close study of the documentation that came with the C++ translation system (compiler) should help address these problems.
-
-Finally, we need to point out that what applies to the ordinary function template in our example also applies to member functions and static data members of class templates, as well as to member function templates.
-
-### 9.2 Templates and **inline** 
-
-Declaring functions to be inline is a common tool to improve the running time of programs. The `inline` specifier was meant to be a hint for the implementation that inline substitution of the function body at the point of call is preferred over the usual function call mechanism.
-
-However, an implementation may ignore the hint. Hence, the only guaranteed effect of `inline` is to allow a function definition to appear multiple times in a program (usually because it appears in a header file that is included in multiple places).
-
-Like inline functions, function templates can be defined in multiple translation units. This is usually achieved by placing the definition in a header file that is included by multiple CPP files.
-
-This doesn't mean, however, that function templates use inline substitutions by default. It is entirely up to the compiler whether and when inline substitution of a function template body at the point of call is preferred over the usual function call mechanism. Perhaps surprisingly, compilers are often better than programmers at estimating whether inlining a call would lead to a net performance improvement. As a result, the precise policy of a compiler with respect to `inline` varies from compiler to compiler, and even depends on the options selected for a specific compilation.
-
-Nevertheless, with appropriate performance monitoring tools, a programmer may have better information than a compiler and may therefore wish to override compiler decisions (e.g., when tuning software for particular platforms, such as mobiles phones, or particular inputs). Sometimes this is only possible with compiler-specific attributes such as `noinline` or `always_inline`.
-
-It's worth pointing out at this point that full specializations of function templates act like ordinary functions in this regard: Their definition can appear only once unless they're defined `inline` (see Section [[16.3]] on page [[338]]). See also [Appendix [A]] for a broader, detailed overview of this topic.
-
-### 9.3 Precompiled Headers 
-
-Even without templates, C++ header files can become very large and therefore take a long time to compile. Templates add to this tendency, and the outcry of waiting programmers has in many cases driven vendors to implement a scheme usually known as *precompiled headers* (*PCH*). This scheme operates outside the scope of the standard and relies on vendor-specific options. Although we leave the details on how to create and use precompiled header files to the documentation of the various C++ compilation systems that have this feature, it is useful to gain some understanding of how it works.
-
-When a compiler translates a file, it does so starting from the beginning of the file and working through to the end. As it processes each token from the file (which may come from `#include`d files), it adapts its internal state, including such things as adding entries to a table of symbols so they may be looked up later. While doing so, the compiler may also generate code in object files.
-
-The precompiled header scheme relies on the fact that code can be organized in such a manner that many files start with the same lines of code. Let's assume for the sake of argument that every file to be compiled starts with the same *N* lines of code. We could compile these *N* lines and save the complete state of the compiler at that point in a *precompiled header*. Then, for every file in our program, we could reload the saved state and start compilation at line *N+1*. At this point it is worthwhile to note that reloading the saved state is an operation that can be orders of magnitude faster than actually compiling the first *N* lines. However, saving the state in the first place is typically more expensive than just compiling the *N* lines. The increase in cost varies roughly from 20 to 200 percent.
-
-    #include <iostream>
-
-The key to making effective use of precompiled headers is to ensure that---as much as possible--- files start with a maximum number of common lines of code. In practice this means the files must start with the same `#include` directives, which (as mentioned earlier) consume a substantial portion of our build time. Hence, it can be very advantageous to pay attention to the order in which headers are included. For example, the following two files:
-
-    #include <vector>
-    #include <list>
-    ...
-
-and
-
-    #include <list>
-    #include <vector>
-    ...
-
-inhibit the use of precompiled headers because there is no common initial state in the sources.
-
-Some programmers decide that it is better to `#include` some extra unnecessary headers than to pass on an opportunity to accelerate the translation of a file using a precompiled header. This decision can considerably ease the management of the inclusion policy. For example, it is usually relatively straightforward to create a header file named `std.hpp` that includes all the standard headers:[2]
-
-    #include <iostream>
-    #include <string>
-    #include <vector>
-    #include <deque>
-    #include <list>
-    ...
-
-This file can then be precompiled, and every program file that makes use of the standard library can then simply be started as follows:
-
-    #include "std.hpp"\
-    ...
-
-Normally this would take a while to compile, but given a system with sufficient memory, the pre-compiled header scheme allows it to be processed significantly faster than almost any single standard header would require without precompilation. The standard headers are particularly convenient in this way because they rarely change, and hence the precompiled header for our `std.hpp` file can be built once. Otherwise, precompiled headers are typically part of the dependency configuration of a project (e.g., they are updated as needed by the popular `make` tool or an integrated development environment's (IDE) project build tool).
-
-One attractive approach to manage precompiled headers is to create *layers* of precompiled headers that go from the most widely used and stable headers (e.g., our `std.hpp` header) to headers that aren't expected to change all the time and therefore are still worth precompiling. However, if headers are under heavy development, creating precompiled headers for them can take more time than what is saved by reusing them. A key concept to this approach is that a precompiled header for a more stable layer can be reused to improve the precompilation time of a less stable header. For example, suppose that in addition to our `std.hpp` header (which we have precompiled), we also define a `core.hpp` header that includes additional facilities that are specific to our project but nonetheless achieve a certain level of stability:
-
-    #include "std.hpp"\
-    #include "core_data.hpp]\
-    #include "core_algos.hpp"\
-    ...
-
-Because this file starts with `#include "std.hpp"`, the compiler can load the associated precom-piled header and continue with the next line without recompiling all the standard headers. When the file is completely processed, a new precompiled header can be produced. Applications can then use `#include "core.hpp"` to provide access quickly to large amounts of functionality because the compiler can load the latter precompiled header.
-
-### 9.4 Decoding the Error Novel 
-
-Ordinary compilation errors are normally quite succinct and to the point. For example, when a compiler says "`class X has no member ’fun’`," it usually isn't too hard to figure out what is wrong in our code (e.g., we might have mistyped `run` as `fun`). Not so with templates. Let's look at some examples.
-
-##### Simple Type Mismatch 
-
-Consider the following relatively simple example using the C++ standard library:
-
-[Click here to view code image]
-
-*basics/errornovel1.cpp*
-
-#include <string>
-#include <map>
-#include <algorithm>
-int main()
-{
-    std::map<std::string,[double]> coll;\
-    ...
-    *[// find the first nonempty string in]* [coll]*[:]*\
-    auto pos = std::find_if (coll.begin(), coll.end(),\
-                    `[] (std::string const& s));`\
-}
-
-It contains a fairly small mistake: In the lambda used to find the first matching string in the collection, we check against a given string. However, the elements in a map are key/value pairs, so that we should expect a `std::pair<std::string const, double>`.
-
-A version of the popular GNU C++ compiler reports the following error:
-
-[Click here to view code image]
-
-1   In file included from /cygdrive/p/gcc/gcc61-include/bits/stl_algobase.h:71:0,\
-2  from /cygdrive/p/gcc/gcc61-include/bits/char_traits.h:39,\
-3  from /cygdrive/p/gcc/gcc61-include/string:40,\
-4  from errornovel1.cpp:1:\
-5   /cygdrive/p/gcc/gcc61-include/bits/predefined_ops.h: In instantiation of \'bool \_\_gnu_cxx\
-      ::\_\_ops::\_Iter_pred<\_Predicate>::operator()(\_Iterator) [with \_Iterator = std::\_Rb_tree_i\
-      terator<std::pair<const std::\_\_cxx11::basic_string<char>, double> >; \_Predicate = main()
-       ::<lambda(const string&)>]\':\
-6  /cygdrive/p/gcc/gcc61-include/bits/stl_algo.h:104:42:  required from \'\_InputIterator\
-      std::\_\_find_if(\_InputIterator, \_InputIterator, \_Predicate, std::input_iterator_tag)
-      [with \_InputIterator = std::\_Rb_tree_iterator<std::pair<const std::\_\_cxx11::basic_string\
-        <char>, double> >; \_Predicate = \_\_gnu_cxx::\_\_ops::\_Iter_pred<main()::<lambda(const\
-        string&)> >]\'\
-7  /cygdrive/p/gcc/gcc61-include/bits/stl_algo.h:161:23:  required from \'\_Iterator std::\_\_\
-      find_if(\_Iterator, \_Iterator, \_Predicate) [with \_Iterator = std::\_Rb_tree_iterator<std::\
-      pair<const std::\_\_cxx11::basic_string<char>, double> >; \_Predicate = \_\_gnu_cxx::\_\_ops::\_\
-      Iter_pred<main()::<lambda(const string&)> >]\'\
-8  /cygdrive/p/gcc/gcc61-include/bits/stl_algo.h:3824:28:  required from \'\_IIter std::find\
-      \_if(\_IIter, \_IIter, \_Predicate) [with \_IIter = std::\_Rb_tree_iterator<std::pair<const\
-      std::\_\_cxx11::basic_string<char>, double> >; \_Predicate = main()::<lambda(const string&)
-      >]\'\
-9   errornovel1.cpp:13:29:     required from here\
-10 /cygdrive/p/gcc/gcc61-include/bits/predefined_ops.h:234:11: error: no match for call to\
-      \'(main()::<lambda(const string&)>) (std::pair<const std::\_\_cxx11::basic_string<char>,\
-      double>&)'\
-11    
-12  \^\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\
-13 /cygdrive/p/gcc/gcc61-include/bits/predefined_ops.h:234:11: note: candidate: bool (\*)(\
-      const string&)  <conversion>
-14 /cygdrive/p/gcc/gcc61-include/bits/predefined_ops.h:234:11: note:     candidate expects 2\
-      arguments, 2 provided\
-15 errornovel1.cpp:11:52: note: candidate: main()::<lambda(const string&)>
-16  [] (std::string const& s) {
-17  \^\
-18 errornovel1.cpp:11:52: note:     no known conversion for argument 1 from \'std::pair<const\
-      std::\_\_cxx11::basic_string<char>, double>\' to \'const string& {aka const std::\_\_cxx11::\
-      basic_string<char>&}'\
-
-A message like this starts looking more like a novel than a diagnostic. It can also be overwhelming to the point of discouraging novice template users. However, with some practice, messages like this become manageable, and the errors are at least relatively easily located.
-
-The first part of this error message says that an error occurred in a function template instance deep inside an internal `predefined_ops.h` header, included from `errornovel1.cpp` via various other headers. Here and in the following lines, the compiler reports what was instantiated with which arguments. In this case, it all started with the statement ending on line 13 of `errornovel1.cpp`, which is:
-
-[Click here to view code image]
-
-    auto pos = std::find_if (coll.begin(), coll.end(),                     `[] (std::string const& s) );`
-
-This caused the instantiation of a `find_if` template on line 115 of the `stl_algo.h` header, where the code
-
-[Click here to view code image]
-
-`_IIter std::find_if(_IIter, _IIter, _Predicate)`
-
-is instantiated with
-
-[Click here to view code image]
-
-\_IIter = std::\_Rb_tree_iterator<std::pair<const std::\_\_cxx11::basic_string<char>,\
-                        double> >
-\_Predicate = main()::<lambda(const string&)>
-
-The compiler reports all this in case we simply were not expecting all these templates to be instantiated. It allows us to determine the chain of events that caused the instantiations.
-
-However, in our example, we're willing to believe that all kinds of templates needed to be instantiated, and we just wonder why it didn't work. This information comes in the last part of the message: The part that says "`no match for call`" implies that a function call could not be resolved because the types of the arguments and the parameter types didn't match. It lists what is called
-
-[Click here to view code image]
-
-(main()::<lambda(const string&)>) (std::pair<const std::\_\_cxx11::basic_string<char>,\
-                            double>&)
-
-and code that caused this call:
-
-[Click here to view code image]
-
-
-
-Furthermore, just after this, the line containing "`note: candidate:`" explains that there was a single candidate type expecting a `const string&` and that this candidate is defined in line 11 of `errornovel1.cpp` as lambda `[] (std::string const& s)` combined with a reason why a possible candidate didn't fit:
-
-[Click here to view code image]
-
-`no known conversion for argument 1 from ’std::pair<const std::__cxx11::basic_string<char>, double>’ to ’const string& ’`
-
-which describes the problem we have.
-
-There is no doubt that the error message could be better. The actual problem could be emitted before the history of the instantiation, and instead of using fully expanded template instantiation names like `std::__cxx11::basic_string<char>`, using just `std::string` might be enough. However, it is also true that all the information in this diagnostic could be useful in some situations. It is therefore not surprising that other compilers provide similar information (although some use the structuring techniques mentioned).
-
-For example, the Visual C++ compiler outputs something like:
-
-[Click here to view code image]
-
-1   c:\\tools_root\\cl\\inc\\algorithm(166): error C2664: \'bool main::<lambda_b863c1c7cd07048816\
-      f454330789acb4>::operator ()(const std::string &) const\': cannot convert argument 1 from\
-      \'std::pair<const \_Kty,\_Ty>\' to \'const std::string &\'\
-2        with\
-3        [\
-4              \_Kty=std::string,\
-5              \_Ty=double\
-6        ]\
-7   c:\\tools_root\\cl\\inc\\algorithm(166): note: Reason: cannot convert from \'std::pair<const\
-      \_Kty,\_Ty>\' to \'const std::string\'\
-8        with\
-9        [\
-10              \_Kty=std::string,\
-11              \_Ty=double\
-12        ]\
-13 c:\\tools_root\\cl\\inc\\algorithm(166): note: No user-defined-conversion operator available\
-   that can perform this conversion, or the operator cannot be called\
-14 c:\\tools_root\\cl\\inc\\algorithm(177): note: see reference to function template instantiat\
-   ion \'\_InIt std::\_Find_if_unchecked<std::\_Tree_unchecked_iterator<\_Mytree>,\_Pr>(\_InIt,\_In\
-   It,\_Pr &)' being compiled\
-15        with\
-16        [\
-17            \_InIt=std::\_Tree_unchecked_iterator<std::\_Tree_val<std::\_Tree_simple_types\
-              <std::pair<const std::string,double>>>>,\
-18            \_Mytree=std::\_Tree_val<std::\_Tree_simple_types<std::pair<const std::string,\
-              double>>>,\
-19            \_Pr=main::<lambda_b863c1c7cd07048816f454330789acb4>
-20        ]\
-21 main.cpp(13): note: see reference to function template instantiation \'\_InIt std::find_if\
-   <std::\_Tree_iterator<std::\_Tree_val<std::\_Tree_simple_types<std::pair<const \_Kty,\_Ty>>>>
-   ,main::<lambda_b863c1c7cd07048816f454330789acb4>>(\_InIt,\_InIt,\_Pr)' being compiled\
-22        with\
-23        [\
-24            \_InIt=std::\_Tree_iterator<std::\_Tree_val<std::\_Tree_simple_types<std::pair<\
-              const std::string,double>>>>,\
-25            \_Kty=std::string,\
-26            \_Ty=double,\
-27            \_Pr=main::<lambda_b863c1c7cd07048816f454330789acb4>
-28        ]\
-
-Here, again, we provide the chain of instantiations with the information telling us what was instantiated by which arguments and where in the code, and we see twice that we
-
-[Click here to view code image]
-
-`cannot convert from ’std::pair<const _Kty,_Ty>’ to ’const std::string’ with [     _Kty=std::string,     _Ty=double ]`
-
-**Missing `const` on Some Compilers**
-
-Unfortunately, it sometimes happens that generic code is a problem only with some compilers. Consider the following example:
-
-[Click here to view code image]
-
-*basics/errornovel2.cpp*
-
-#include <string>
-#include <unordered_set>
-\
-class Customer\
-{
-  private:\
-    std::string name;\
-  public:
-\
-    Customer (std::string const& n)
-     : name(n) {
-    }
-    std::string getName() const {
-     return name;\
-  }
-};
-int main()
-{
-\
-   *[// provide our own hash function:]*\
-   struct MyCustomerHash {
-     *[// NOTE: missing]* const *[is only an error with g++ and clang:]*\
-     std::size_t [operator]() (Customer const& c) {
-      return std::hash<std::string>()(c.getName());
-   }
-};
-\
-   *[// and use it for a hash table of]* Customer*[s:]*\
-   std::unordered_set<Customer,MyCustomerHash> coll; *...
-*}
-
-With Visual Studio 2013 or 2015, this code compiles as expected. However, with g++ or clang, the code causes significant error messages. On g++ 6.1, for example, the first error message is as follows:
-
-[Click here to view code image]
-
-1   In file included from /cygdrive/p/gcc/gcc61-include/bits/hashtable.h:35:0,\
-2     from /cygdrive/p/gcc/gcc61-include/unordered_set:47,\
-3     from errornovel2.cpp:2:\
-4   /cygdrive/p/gcc/gcc61-include/bits/hashtable_policy.h: In instantiation of \'struct std::\
-      \_\_detail::\_\_is_noexcept_hash<Customer, main()::MyCustomerHash>\':\
-5   /cygdrive/p/gcc/gcc61-include/type_traits:143:12:     required from \'struct std::\_\_and\_<\
-      std::\_\_is_fast_hash<main()::MyCustomerHash>, std::\_\_detail::\_\_is_noexcept_hash<Customer,\
-      main()::MyCustomerHash> >\'\
-6   /cygdrive/p/gcc/gcc61-include/type_traits:154:38:     required from \'struct std::\_\_not\_<\
-      std::\_\_and\_<std::\_\_is_fast_hash<main()::MyCustomerHash>, std::\_\_detail::\_\_is_noexcept\_\
-      hash<Customer, main()::MyCustomerHash> > >\'\
-7  /cygdrive/p/gcc/gcc61-include/bits/unordered_set.h:95:63:  required from \'class std::\
-      unordered_set<Customer, main()::MyCustomerHash>\'\
-8   errornovel2.cpp:28:47:     required from here\
-9   /cygdrive/p/gcc/gcc61-include/bits/hashtable_policy.h:85:34: error: no match for call to\
-      \'(const main()::MyCustomerHash) (const Customer&)'\
-10     noexcept(declval<const \_Hash&>()(declval<const \_Key&>()))>
-11  \~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\^\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\
-12 errornovel2.cpp:22:17: note: candidate: std::size_t main()::MyCustomerHash::operator()(\
-      const Customer&) <near match>
-13     std::size_t operator() (const Customer& c) {
-14  \^\~\~\~\~\~\~\~\
-15 errornovel2.cpp:22:17: note:     passing \'const main()::MyCustomerHash\*\' as \'this\' argument\
-      discards qualifiers
-
-immediately followed by more than 20 other error messages:
-
-16 In file included from /cygdrive/p/gcc/gcc61-include/bits/move.h:57:0,\
-18      from /cygdrive/p/gcc/gcc61-include/bits/stl_pair.h:59,\
-19      from /cygdrive/p/gcc/gcc61-include/bits/stl_algobase.h:64,\
-20      from /cygdrive/p/gcc/gcc61-include/bits/char_traits.h:39,\
-21      from /cygdrive/p/gcc/gcc61-include/string:40,\
-22      from errornovel2.cpp:1:\
-23 /cygdrive/p/gcc/gcc61-include/type_traits: In instantiation of \'struct std::\_\_not\_<std::\
-      \_\_and\_<std::\_\_is_fast_hash<main()::MyCustomerHash>, std::\_\_detail::\_\_is_noexcept_hash<\
-      Customer, main()::MyCustomerHash> > >\':\
-\
-24 /cygdrive/p/gcc/gcc61-include/bits/unordered_set.h:95:63:     required from \'class std::\
-      unordered_set<Customer, main()::MyCustomerHash>\'\
-25 errornovel2.cpp:28:47:     required from here\
-26 /cygdrive/p/gcc/gcc61-include/type_traits:154:38: error: \'value\' is not a member of \'std\
-      ::\_\_and\_<std::\_\_is_fast_hash<main()::MyCustomerHash>, std::\_\_detail::\_\_is_noexcept_hash<\
-      Customer, main()::MyCustomerHash> >\'\
-27      : public integral_constant<bool, !\_Pp::value>
-28  \^\~\~\~\
-29 In file included from /cygdrive/p/gcc/gcc61-include/unordered_set:48:0,\
-30  from errornovel2.cpp:2:\
-31 /cygdrive/p/gcc/gcc61-include/bits/unordered_set.h: In instantiation of \'class std::\
-      unordered_set<Customer, main()::MyCustomerHash>\':\
-32 errornovel2.cpp:28:47:     required from here\
-33 /cygdrive/p/gcc/gcc61-include/bits/unordered_set.h:95:63: error: \'value\' is not a member\
-      of \'std::\_\_not\_<std::\_\_and\_<std::\_\_is_fast_hash<main()::MyCustomerHash>, std::\_\_detail::\
-      \_\_is_noexcept_hash<Customer, main()::MyCustomerHash> > >\'\
-34  typedef \_\_uset_hashtable<\_Value, \_Hash, \_Pred, \_Alloc>   \_Hashtable;\
-35 \^\~\~\~\~\~\~\~\~\~\
-36 /cygdrive/p/gcc/gcc61-include/bits/unordered_set.h:102:45: error: \'value\' is not a member\
-      of \'std::\_\_not\_<std::\_\_and\_<std::\_\_is_fast_hash<main()::MyCustomerHash>, std::\_\_detail::\
-      \_\_is_noexcept_hash<Customer, main()::MyCustomerHash> > >\'\
-37  typedef typename \_Hashtable::key_type key_type;\
-38  \^\~\~\~\~\~\~\~\
-...
-
-Again, it's hard to read the error message (even finding the beginning and end of each message is a chore). The essence is that deep in header file `hashtable_policy.h` in the instantiation of `std::unordered_set<>` required by
-
-[Click here to view code image]
-
-std::unordered_set<Customer,MyCustomerHash> coll;
-
-there is no match for the call to
-
-[Click here to view code image]
-
-const main()::MyCustomerHash [(const] Customer&)
-
-in the instantiation of
-
-[Click here to view code image]
-
-    [noexcept](declval<const \_Hash&>()(declval[<const] \_Key&>()))>
-        \~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\^\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~\~
-
-(`declval<const _Hash&>()` is an expression of type `main()::MyCustomerHash`). A possible "near match" candidate is
-
-[Click here to view code image]
-
-`std::size_t main()::MyCustomerHash::operator()(const Customer&)`
-
-which is declared as
-
-[Click here to view code image]
-
-`std::size_t operator() (const Customer& c) {`\
-        `^~~~~~~~`
-
-and the last note says something about the problem:
-
-[Click here to view code image]
-
-`passing ’const main()::MyCustomerHash*’ as ’this’ argument discards qualifiers`
-
-Can you see what the problem is? This implementation of the `std::unordered_set` class template requires that the function call operator for the hash object be a `const` member function (see also Section [[11.1.1]] on page [[159]]). When that's not the case, an error arises deep in the guts of the algorithm.
-
-All other error messages cascade from the first and go away when a `const` qualifier is simply added to the hash function operator:
-
-[Click here to view code image]
-
-std::size_t [operator]() [(const] Customer& c) const {
-...
-`}`
-
-Clang 3.9 gives the slightly better hint at the end of the first error message that `operator()` of the hash functor is not marked `const`:
-
-[Click here to view code image]
-
-...
-errornovel2.cpp:28:47: note: in instantiation of template class 'std::unordered_set<Customer\
-, MyCustomerHash, std::equal_to<Customer>, std::allocator<Customer> >' requested here\
-  std::unordered_set<Customer,MyCustomerHash> coll;\
-                                              \^\
-\
-errornovel2.cpp:22:17: note: candidate function not viable: 'this' argument has type 'const\
-MyCustomerHash', but method is not marked const\
-    std::size_t operator() (const Customer& c) {
-                \^
-
-Note that clang here mentions default template parameters such as `std::allocator<Customer>`, while gcc skips them.
-
-As you can see, it is often helpful to have more than one compiler available to test your code. Not only does it help you write more portable code, but where one compiler produces a particularly inscrutable error message, another might provide more insight.
-
-### 9.5 Afternotes 
-
-The organization of source code in header files and CPP files is a practical consequence of various incarnations of the *one-definition rule* or *ODR*. An extensive discussion of this rule is presented in [Appendix [A]].
-
-The inclusion model is a pragmatic answer dictated largely by existing practice in C++ compiler implementations. However, the first C++ implementation was different: The inclusion of template definitions was implicit, which created a certain illusion of *separation* (see [Chapter [14]] for details on this original model).
-
-The first C++ standard ([C++98]) provided explicit support for the *separation model* of template compilation via *exported templates*. The separation model allowed template declarations marked as `export` to be declared in headers, while their corresponding definitions were placed in CPP files, much like declarations and definitions for nontemplate code. Unlike the inclusion model, this model was a theoretical model not based on any existing implementation, and the implementation itself proved far more complicated than the C++ standardization committee had anticipated. It took more than five years to see its first implementation published (May 2002), and no other implementations appeared in the years since. To better align the C++ standard with existing practice, the C++ standardization committee removed exported templates from C++11. Readers interested in learning more about the details (and pitfalls) of the separation model are encouraged to read Sections 6.3 and 10.3 of the first edition of this book ([VandevoordeJosuttisTemplates1st]).
-
-It is sometimes tempting to imagine ways of extending the concept of precompiled headers so that more than one header could be loaded for a single compilation. This would in principle allow for a finer grained approach to precompilation. The obstacle here is mainly the preprocessor: Macros in one header file can entirely change the meaning of subsequent header files. However, once a file has been precompiled, macro processing is completed, and it is hardly practical to attempt to patch a precompiled header for the preprocessor effects induced by other headers. A new language feature known as *modules* (see Section [[17.11]] on page [[366]]) is expected to be added to C++ in the not too distant future to address this issue (macro definitions cannot leak into module interfaces).
-
-### 9.6 Summary 
-
-• The inclusion model of templates is the most widely used model for organizing template code. Alternatives are discussed in [Chapter [14]].
-
-• Only full specializations of function templates need `inline` when defined in header files outside classes or structures.
-
-• To take advantage of precompiled headers, be sure to keep the same order for `#include` directives.
-
-• Debugging code with templates can be challenging.
-
-^[1]^ With some implementations this string is *mangled* (encoded with types of arguments and names of surrounding scopes to distinguish it from other names), but a *demangler* is available to turn it into human-readable text.
-
-^[2]^ In theory, the standard headers do not actually need to correspond to physical files. In practice, however, they do, and the files are very large.
-
-
-
 ## Chapter 10 
 
 ## Basic Template Terminology 
@@ -1829,9 +16,7 @@ There is some confusion about how a class that is a template is called:
 • The term *template class*, on the other hand, has been used
 
 -- as a synonym for class template.
-
 -- to refer to classes generated from templates.
-
 -- to refer to classes with a name that is a *template-id* (the combination of a template name followed by the template arguments specified between `<` and `>`).
 
 The difference between the second and third meanings is somewhat subtle and unimportant for the remainder of the text.
@@ -1852,34 +37,38 @@ The entity resulting from an instantiation or an incomplete instantiation (i.e.,
 
 However, in C++ the instantiation process is not the only way to produce a specialization. Alternative mechanisms allow the programmer to specify explicitly a declaration that is tied to a special substitution of template parameters. As we showed in Section [[2.5]] on page [[31]], such a specialization is introduced with the prefix `template<>`:
 
+```
 [Click here to view code image]
 
 template<typename T1, typename T2>        // primary class template
 class MyClass {
    ...
-`};`\
+};\
 \
 template<>                                // explicit specialization
 class MyClass<std::string[,float]> {
    ...
-`};`
+};
 
+```
 Strictly speaking, this is called an *explicit specialization* (as opposed to an *instantiated* or *generated specialization*).
 
 As described in Section [[2.6]] on page [[33]], specializations that still have template parameters are called *partial specializations*:
 
+```
 [Click here to view code image]
 
 template<typename T>        // partial specialization
 class MyClass<T,T> {
     ...
-`};`\
+};\
 \
 template<typename T>        // partial specialization
 class MyClass[<bool],T> {
     ...
-`};`
+};
 
+```
 When talking about (explicit or partial) specializations, the general template is also called the *primary template*.
 
 ### 10.3 Declarations versus Definitions 
@@ -1888,27 +77,31 @@ So far, the words *declaration* and *definition* have been used only a few times
 
 A *declaration* is a C++ construct that introduces or reintroduces a name into a C++ scope. This introduction always includes a partial classification of that name, but the details are not required to make a valid declaration. For example:
 
+```
 [Click here to view code image]
 
 class C;           // a declaration of [C] as a class
-void f[(int] p);     // a declaration of [f()] as a function and [p] as a named parameter
-[extern int] v;      // a declaration of [v] as a variable
+void f(int] p);     // a declaration of [f()] as a function and [p] as a named parameter
+extern int v;      // a declaration of [v] as a variable
 
+```
 Note that even though they have a "name," macro definitions and `goto` labels are not considered declarations in C++.
 
 Declarations become *definitions* when the details of their structure are made known or, in the case of variables, when storage space must be allocated. For class type definitions, this means a brace-enclosed body must be provided. For function definitions, this means a brace-enclosed body must be provided (in the common case), or the function must be designated as `= default`[2] or `= delete`. For a variable, initialization or the absence of an `extern` specifier causes a declaration to become a definition. Here are examples that complement the preceding nondefinition declarations:
 
+```
 [Click here to view code image]
 
 class C ;               // definition (and declaration) of class [C]\
 \
-void f[(int] p)     [f()]\
+void f(int] p)     [f()]\
   std::cout << p << '\n';\
 }
-[extern int] v = 1;         // an initializer makes this a definition for [v]\
+extern int v = 1;         // an initializer makes this a definition for [v]\
 int w;                    // global variable declarations not preceded by
                           // `extern` are also definitions
 
+```
 By extension, the declaration of a class template or function template is called a definition if it has a body. Hence,
 
 [Click here to view code image]
@@ -1948,7 +141,7 @@ Incomplete types are one of the following:
 class C;              // [C] is an incomplete type
 C const\* cp;          // [cp] is a pointer to an incomplete type
 [extern] C elems[10];   // [elems] has an incomplete type
-[extern int] arr[];     // [arr] has an incomplete type
+extern int arr[];     // [arr] has an incomplete type
 ...
 class C ;          // [C] now is a complete type (and therefore [cp]and [elems]\
                       // no longer refer to an incomplete type)
@@ -2003,7 +196,7 @@ This name can be used much like a corresponding nontemplate entity would be used
 
 int main()
 {
-   `ArrayInClass<double,10>    ad; ad.array[0] = 1.0; }`
+   `ArrayInClass<double,10>    ad; ad.array[0] = 1.0; }
 
 It is essential to distinguish between *template parameters* and *template arguments*. In short, you can say that "*parameters* are initialized by *arguments*."[4] Or more precisely:
 
@@ -2077,7 +270,7 @@ Generic code often benefits from being able to accept any kind of callable, and 
 
 #### 11.1.1 Supporting Function Objects 
 
-Let's look how the `for_each()` algorithm of the standard library is implemented (using our own name "`foreach`" to avoid name conflicts and for simplicity skipping returning anything):
+Let's look how the `for_each()` algorithm of the standard library is implemented (using our own name "`foreach" to avoid name conflicts and for simplicity skipping returning anything):
 
 [Click here to view code image]
 
@@ -2103,14 +296,14 @@ The following program demonstrates the use of this template with various functio
 #include "foreach.hpp"\
 \
 // a function to call:
-void func[(int] i)
+void func(int] i)
    << i << '\n';\
 }
 \
 // a function object type (for objects that can be used as functions):
 class FuncObj {
   public:
-    [void operator]() [(int] i) const  `const` member function
+    [void operator]() (int] i) const  `const` member function
       `std::cout << "FuncObj::op() called for:      "` << i << '\n';\
     }
 };
@@ -2210,7 +403,7 @@ With this implementation, we can still compile our original calls to `foreach()`
 // a class with a member function that shall be called
 class MyClass {
   public:
-    void memfunc[(int] i) const {
+    void memfunc(int] i) const {
       std::cout << "MyClass::memfunc() called for: " << i << '\n'; 
     }
 };
@@ -2232,7 +425,7 @@ int main()
           `obj);`                           // object to call `memfunc()` for
 }
 
-The first call of `foreach()` passes its fourth argument (the string literal `"- value: "`) to the first parameter of the lambda, while the current element in the vector binds to the second parameter of the lambda. The second call passes the member function `memfunc()` as the third argument to be called for `obj` passed as the fourth argument.
+The first call of `foreach()` passes its fourth argument (the string literal "- value: "`) to the first parameter of the lambda, while the current element in the vector binds to the second parameter of the lambda. The second call passes the member function `memfunc()` as the third argument to be called for `obj` passed as the fourth argument.
 
 See Section [[D.3.1]] on page [[716]] for type traits that yield whether a *callable* can be used by `std::invoke()`.
 
@@ -2341,7 +534,7 @@ class C\
 {
   // ensure that `T` is not `void` (ignoring `const` or `volatile`):
   [static_assert](!std::is_same_v<std::remove_cv_t<T>,[void]>,\
-                `"invalid instantiation of class C for void type`\");
+                "invalid instantiation of class C for void type");
   public:
     template<typename V>
     void f(V&& v) {
@@ -2403,9 +596,9 @@ As another example:
 [Click here to view code image]
 
 is_copy_assignable_v<int>        // yields [true] (generally, you can assign an int to an int)
-is_assignable_v<int,int>         // yields [false] (can't call [42 = 42])
+is_assignable_v<int,int>         // yields [false] (can't call [42 = 42)
 
-While `is_copy_assignable` just checks in general whether you can assign `int`s to another (checking the operation for lvalues), `is_assignable` takes the value category (see [Appendix [B]]) into account (here checking whether you can assign a prvalue to a prvalue). That is, the first expression is equivalent to
+While `is_copy_assignable` just checks in general whether you can assign `int`s to another (checking the operation for lvalues), `is_assignable` takes the value category (see [Appendix [B]) into account (here checking whether you can assign a prvalue to a prvalue). That is, the first expression is equivalent to
 
 [Click here to view code image]
 
@@ -2448,7 +641,7 @@ For example, the following declaration deduces the default return type `RT` from
 #include <utility>
 \
 template<typename T1, typename T2,\
-         typename RT = std::decay_t[<decltype][(true] ? std::declval<T1>()
+         typename RT = std::decay_t[<decltype](true] ? std::declval<T1>()
                                                   `: std::declval<T2>())>>`\
 RT max (T1 a, T2 b)
 {
@@ -2547,9 +740,9 @@ int main()
 \
     `RefMem<int&> rm3;`      // ERROR: invalid default value for` N     RefMem<int&, 0> rm4;`   // ERROR: invalid default value for `N`\
 \
-    [extern int] null;\
+    extern int null;\
     `RefMem<int&,null> rm5, rm6;     rm5 = rm6;`             // ERROR: operator= is deleted due to reference member
-`}`
+}
 
 Here we have a class with a member of template parameter type `T`, initialized with a nontype template parameter `Z` that has a zero-initialized default value. Instantiating the class with type `int` works as expected. However, when trying to instantiate it with a reference, things become tricky:
 
@@ -2576,7 +769,7 @@ class Arr {
     `Arr() : elems(SZ)  `SZ` as initial vector size
     }
     void print() const {
-      [for] [(int] i=0; i<SZ; ++i)  `SZ` elements
+      [for] (int] i=0; i<SZ; ++i)  `SZ` elements
         std::cout << elems[i] << [' '];\
       }
     }
@@ -2590,7 +783,7 @@ int main()
   `Arr<int,size> x;`         // initializes internal vector with 10 elements
   `x.print();`               // OK
   `size += 100;`             // OOPS: modifies `SZ` in `Arr<>   x.print();`               // run-time ERROR: invalid memory access: loops over 120 elements
-`}`
+}
 
 Here, the attempt to instantiate `Arr` for elements of a reference type results in an error deep in the code of class `std::vector<>`, because it can't be instantiated with references as elements:
 
@@ -2615,7 +808,7 @@ Arguably, this example is far-fetched. However, in more complex situations, issu
 
 [Click here to view code image]
 
-template<typename T, decltype[(auto]) SZ>
+template<typename T, decltype(auto) SZ>
 class Arr;
 
 Using `decltype(auto)` can easily produce reference types and is therefore generally avoided in this context (use `auto` by default). See Section [[15.10.3]] on page [[302]] for details.
@@ -2653,7 +846,7 @@ template<typename T>
 class optional\
 {
   [static_assert](!std::is_reference<T>::value,\
-                `"Invalid instantiation of optional<T> for references");   … };`
+                "Invalid instantiation of optional<T> for references");   … };`
 
 Reference types in general are quite unlike other types and are subject to several unique language rules. This impacts, for example, the declaration of call parameters (see Section [7] on page [[105]]) and also the way we define type traits (see Section [[19.6.1]] on page [[432]]).
 
@@ -2669,7 +862,7 @@ class Cont {
     T* elems;\
   public:
     ...
-`};`
+};
 
 So far, this class can be used with incomplete types. This is useful, for example, with classes that refer to elements of their own type:
 
@@ -2679,7 +872,7 @@ struct Node\
 {
     std::string value;\
     `Cont<Node> next;`        // only possible if `Cont` accepts incomplete types
-`};`
+};
 
 However, for example, just by using some traits, you might lose the ability to deal with incomplete types. For example:
 
@@ -2952,7 +1145,7 @@ When the `fill()` function is called, the default argument is not instantiated i
 
 class Value {
   public:
-    [explicit] Value[(int]);  // no default constructor
+    [explicit] Value(int);  // no default constructor
 };
 \
 void init (Array<Value>& array)
@@ -3034,7 +1227,7 @@ class Dynamic {
 
 #### 12.1.2 Linkage of Templates 
 
-Every template must have a name, and that name must be unique within its scope, except that function templates can be overloaded (see [Chapter [16]]). Note especially that, unlike class types, class templates cannot share a name with a different kind of entity:
+Every template must have a name, and that name must be unique within its scope, except that function templates can be overloaded (see [Chapter [16]). Note especially that, unlike class types, class templates cannot share a name with a different kind of entity:
 
 [Click here to view code image]
 
@@ -3326,7 +1519,7 @@ void testContainers();  // OK: declares a template template parameter pack
 
 The `MultiArray` example requires all nontype template arguments to be of the same type `unsigned`. C++17 introduced the possibility of deduced nontype template arguments, which allows us to work around that restriction to some extent---see Section [[15.10.1]] on page [[298]] for details.
 
-Primary class templates, variable templates, and alias templates may have at most one template parameter pack and, if present, the template parameter pack must be the last template parameter. Function templates have a weaker restriction: Multiple template parameter packs are permitted, as long as each template parameter subsequent to a template parameter pack either has a default value (see the next section) or can be deduced (see [Chapter [15]]):
+Primary class templates, variable templates, and alias templates may have at most one template parameter pack and, if present, the template parameter pack must be the last template parameter. Function templates have a weaker restriction: Multiple template parameter packs are permitted, as long as each template parameter subsequent to a template parameter pack either has a default value (see the next section) or can be deduced (see [Chapter [15]):
 
 [Click here to view code image]
 
@@ -3343,7 +1536,7 @@ template<[unsigned]... Dims1, [unsigned]... Dims2>
 
 The last example is the declaration of a function with a deduced return type---a C++14 feature. See also Section [[15.10.1]] on page [[296]].
 
-Declarations of partial specializations of class and variable templates (see [Chapter [16]]) *can* have multiple parameter packs, unlike their primary template counterparts. That is because partial specialization are selected through a deduction process that is nearly identical to that used for function templates.
+Declarations of partial specializations of class and variable templates (see [Chapter [16]) *can* have multiple parameter packs, unlike their primary template counterparts. That is because partial specialization are selected through a deduction process that is nearly identical to that used for function templates.
 
 [Click here to view code image]
 
@@ -3524,7 +1717,7 @@ Moreover, such parameters can't usefully be placed after a template parameter pa
 [Click here to view code image]
 
 template<typename ... Ts, int N>
-void f[(double] (&)[N+1], Ts ... ps);  // useless declaration because [N]\
+void f(double] (&)[N+1], Ts ... ps);  // useless declaration because [N]\
                                      // cannot be specified or deduced
 
 Because function templates can be overloaded, explicitly providing all the arguments for a function template may not be sufficient to identify a single function: In some cases, it identifies a *set* of functions. The following example illustrates a consequence of this observation:
@@ -3554,7 +1747,7 @@ Furthermore, it is possible that substituting template arguments in a function t
 
 [Click here to view code image]
 
-template<typename T> RT1 test[(typename] T::X const\*);
+template<typename T> RT1 test(typename] T::X const\*);
 template<typename T> RT2 test(...);
 
 The expression `test<int>` makes no sense for the first of the two function templates because type `int` has no member type `X`. However, the second template has no such problem. Therefore, the expression `&test<int>` identifies the address of a single function. The fact that the substitution of `int` into the first template fails does not make the expression invalid. This SFINAE (substitution failure is not an error) principle is an important ingredient to make the overloading of function templates practical and is discussed in Section [[8.4]] on page [[129]] and Section [[15.7]] on page [[284]].
@@ -3609,8 +1802,8 @@ int a;\
 C<int\*, &a>\* c2;        // address of an external variable
 \
 void f();
-void f[(int]);
-C<void (\*)[(int]), f>\* c3;  // name of a function: overload resolution selects
+void f(int);
+C<void (\*)(int), f>\* c3;  // name of a function: overload resolution selects
                           // [f(int)] in this case; the [&] is implied
 \
 template<typename T> void templ_func();
@@ -3718,8 +1911,8 @@ class Rel *\
    ...
 };
 \
-Rel<int, [double], std::list> rel;  *[// OK:]* [std::list] *[has two template parameters]*\
-                                  *[//     but can be used with one argument]*
+Rel<int, [double], std::list> rel;  // OK:]* [std::list] *[has two template parameters]*\
+                                  //     but can be used with one argument]*
 
 Template parameter packs can only match template arguments of the same kind. For example, the following class template can be instantiated with any class template or alias template having only template type parameters, because the template type parameter pack passed there as `TT` can match zero or more template type parameters:
 
@@ -3727,24 +1920,24 @@ Template parameter packs can only match template arguments of the same kind. For
 
 #include <list>
 #include <map>
-    *[// declares in namespace]* [std]*[:]*\
-    *[//]*  [template<typename Key, typename T,]\
-    *[//]*           [typename Compare = less<Key>,]\
-    *[//]*           [typename Allocator = allocator<pair<Key const, T>>>]\
-    *[//]*  [class map;]\
+    // declares in namespace]* [std]*[:]*\
+    //]*  [template<typename Key, typename T,]\
+    //]*           [typename Compare = less<Key>,]\
+    //]*           [typename Allocator = allocator<pair<Key const, T>>>]\
+    //]*  [class map;]\
 #include <array>
-    *[// declares in namespace]* [std]*[:]*\
-    *[//]*  [template<typename T, size_t N>]\
-    *[//]*  [class array;]\
+    // declares in namespace]* [std]*[:]*\
+    //]*  [template<typename T, size_t N>]\
+    //]*  [class array;]\
 \
 template<template<typename... > class TT>
 class AlmostAnyTmpl {
 };
 \
-AlmostAnyTmpl<std::vector> withVector; *[//two type parameters]*\
-AlmostAnyTmpl<std::map> withMap;       *[// four type parameters]*\
-AlmostAnyTmpl<std::array> withArray;   *[// ERROR: a template type parameter pack]*\
-                                       *[// doesn't match a nontype template parameter]*
+AlmostAnyTmpl<std::vector> withVector; //two type parameters]*\
+AlmostAnyTmpl<std::map> withMap;       // four type parameters]*\
+AlmostAnyTmpl<std::array> withArray;   // ERROR: a template type parameter pack]*\
+                                       // doesn't match a nontype template parameter]*
 
 The fact that, prior to C++17, only the keyword `class` could be used to declare a template template parameter does not indicate that only class templates declared with the keyword `class` were allowed as substituting arguments. Indeed, `struct`, `union`, and alias templates are all valid arguments for a template template parameter (alias templates since C++11, when they were introduced). This is similar to the observation that any type can be used as an argument for a template type parameter declared with the keyword `class`.
 
@@ -3797,13 +1990,13 @@ When template arguments are determined for a variadic template, each template pa
 
 template<typename... Types>
 class Tuple {
-  *[// provides operations on the list of types in]* [Types]\
+  // provides operations on the list of types in]* [Types]\
 };
 \
 int main() {
-  Tuple<> t0;           *[//]* [Types] *[contains an empty list]*\
-  Tuple<int> t1;        *[//]* [Types] *[contains]* int\
-  Tuple<int, [float]> t2; *[//]*  [Types] *[contains]* int *[and]* [float]\
+  Tuple<> t0;           //]* [Types] *[contains an empty list]*\
+  Tuple<int> t1;        //]* [Types] *[contains]* int\
+  Tuple<int, [float]> t2; //]*  [Types] *[contains]* int *[and]* [float]\
 }
 
 Because a template parameter pack represents a list of template arguments rather than a single template argument, it must be used in a context where the same language construct applies to all of the arguments in the argument pack. One such construct is the `sizeof…` operation, which counts the number of arguments in the argument pack:
@@ -3987,10 +2180,10 @@ There is a syntactic ambiguity between an unnamed function parameter pack appear
 
 [Click here to view code image]
 
-template<typename T> void c_style[(int], T...);
-template<typename... T> void pack[(int], T...);
+template<typename T> void c_style(int], T...);
+template<typename... T> void pack(int], T...);
 
-In the first case, the "`T…`" is treated as "`T, …`": an unnamed parameter of type `T` followed by a C-style vararg parameter. In the second case, the "`T…`" construct is treated as a function parameter pack because `T` is a valid expansion pattern. The disambiguation can be forced by adding a comma before the ellipsis (which ensures the ellipsis is treated as a C-style "vararg" parameter) or by following the `…` by an identifier, which makes it a named function parameter pack. Note that in generic lambdas, a trailing `…` will be treated as denoting a parameter pack if the type that immediately precedes it (with no intervening comma) contains `auto`.
+In the first case, the "`T…" is treated as "`T, …": an unnamed parameter of type `T` followed by a C-style vararg parameter. In the second case, the "`T…" construct is treated as a function parameter pack because `T` is a valid expansion pattern. The disambiguation can be forced by adding a comma before the ellipsis (which ensures the ellipsis is treated as a C-style "vararg" parameter) or by following the `…` by an identifier, which makes it a named function parameter pack. Note that in generic lambdas, a trailing `…` will be treated as denoting a parameter pack if the type that immediately precedes it (with no intervening comma) contains `auto`.
 
 #### 12.4.4 Multiple and Nested Pack Expansions 
 
@@ -4064,7 +2257,7 @@ The variadic function template `g()` creates a value `v` that is direct-initiali
 
 #### 12.4.6 Fold Expressions 
 
-A recurring pattern in programming is the *fold* of an operation on a sequence of values. For example, a *right fold* of a function `fn` over a sequence `x[1], x[2], …, x[n-1], x[n]` is given by `fn(x[1], fn(x[2], fn(`...`, fn(x[n-1], x[n])`...`)))` While exploring a new language feature, the C++ committee ran into the need to deal with such constructs for the special case of a logical binary operator (i.e., `&&` or `||`) applied to a pack expansion. Without an extra feature, we might write the following code to achieve that for the `&&` operator:
+A recurring pattern in programming is the *fold* of an operation on a sequence of values. For example, a *right fold* of a function `fn` over a sequence `x[1], x[2], …, x[n-1], x[n]` is given by `fn(x[1], fn(x[2], fn(`...`, fn(x[n-1], x[n)`...`)))` While exploring a new language feature, the C++ committee ran into the need to deal with such constructs for the special case of a logical binary operator (i.e., `&&` or `||`) applied to a pack expansion. Without an extra feature, we might write the following code to achieve that for the `&&` operator:
 
 [Click here to view code image]
 
@@ -4103,7 +2296,7 @@ template<typename... T> [bool] g() {
 [Click here to view code image]
 
 template<typename... T> [bool] g() {
-  return (trait<T>() && ... && [true]);
+  return (trait<T>() && ... && [true);
 }
 
 As you'd expect, fold expressions are pack expansions. Note that if the pack is empty, the type of the fold expression can still be determined from the non-pack operand (`value` in the forms above).
@@ -4210,15 +2403,15 @@ template<typename T1, typename T2>
 void combine(T1, T2);
 \
 class Mixer {
-    [friend void] combine<>[(int]&, int&);
+    [friend void] combine<>(int]&, int&);
                        // OK: [T1 = int&], [T2 = int&]\
-    [friend void] combine[<int], int>[(int], int);
+    [friend void] combine[<int], int>(int], int);
                        // OK: [T1 = int], [T2 = int]\
-    [friend void] combine[<char]>[(char], int);
+    [friend void] combine[<char]>(char], int);
                        // OK: [T1 = char T2 = int]\
-    [friend void] combine[<char]>[(char]&, int);
+    [friend void] combine[<char]>(char]&, int);
                        // ERROR: doesn't match [combine()] template
-    [friend void] combine<>[(long], [long]) \
+    [friend void] combine<>(long], [long) \
                        // ERROR: definition not allowed!
 };
 
@@ -4232,22 +2425,22 @@ If the name is not followed by angle brackets, there are two possibilities:
 
 [Click here to view code image]
 
-void multiply[(void]\*);    // ordinary function
+void multiply(void]\*);    // ordinary function
 \
 template<typename T>
 void multiply(T);        // function template
 \
 class Comrades {
-    [friend void] multiply[(int]) \
+    [friend void] multiply(int) \
                          // defines a new function [::multiply(int)]\
 \
-    [friend void] ::multiply[(void]\*);
+    [friend void] ::multiply(void]\*);
                          // refers to the ordinary function above,
                          // not to the [multiply<void\*>] instance
-     [friend void] ::multiply[(int]);
+     [friend void] ::multiply(int);
                          // refers to an instance of the template
 \
-    [friend void] ::multiply[<double]\*>[(double]\*);
+    [friend void] ::multiply[<double]\*>(double]\*);
                          // qualified names can also have angle brackets,
                          // but a template must be visible
     [friend void] ::error() \
@@ -4325,7 +2518,7 @@ Friend templates, default template arguments, and template template parameters c
 
 Alias templates were introduced as part of the 2011 standard. Alias templates serve the same needs as the oft-requested "typedef templates" feature by making it easy to write a template that is merely a different spelling of an existing class template. The specification (N2258) that made it into the standard was authored by Gabriel Dos Reis and Bjarne Stroustrup; Mat Marcus also contributed to some of the early drafts of that proposal. Gaby also worked out the details of the variable template proposal for C++14 (N3651). Originally, the proposal only intended to support `constexpr` variables, but that restriction was lifted by the time it was adopted in the draft standard.
 
-Variadic templates were driven by the needs of the C++11 standard library and the Boost libraries (see [Boost]), where C++ template libraries were using increasingly advanced (and convoluted) techniques to provide templates that accept an arbitrary number of template arguments. Doug Gregor, Jaakko J¨arvi, Gary Powell, Jens Maurer, and Jason Merrill provided the initial specification for the standard (N2242). Doug also developed the original implementation of the feature (in GNU's GCC) while the specification was being developed, which much helped the ability to use the feature in the standard library.
+Variadic templates were driven by the needs of the C++11 standard library and the Boost libraries (see [Boost), where C++ template libraries were using increasingly advanced (and convoluted) techniques to provide templates that accept an arbitrary number of template arguments. Doug Gregor, Jaakko J¨arvi, Gary Powell, Jens Maurer, and Jason Merrill provided the initial specification for the standard (N2242). Doug also developed the original implementation of the feature (in GNU's GCC) while the specification was being developed, which much helped the ability to use the feature in the standard library.
 
 Fold expressions were the work of Andrew Sutton and Richard Smith: They were added to C++17 through their paper N4191.
 
@@ -4425,9 +2618,9 @@ In contrast, unqualified names are typically looked up in successively more encl
 
 [Click here to view code image]
 
-[extern int] count;               // #1
+extern int count;               // #1
 \
-int lookup_example[(int] count)   // #2
+int lookup_example(int] count)   // #2
 {
     if (count < 0) {
         int count = 1;          // #3
@@ -4517,7 +2710,7 @@ namespace N {
     }
 }
 \
-void f[(int])
+void f(int)
 {
     std::cout << "::f(int) called\\n";\
 }
@@ -4653,7 +2846,7 @@ template<typename T> class C {
   };
 };
 
-When a type refers to a current instantiation, the contents of that instantiated class are guaranteed to be instantiated from the class template or nested class thereof that is currently being defined. This has implications for name lookup when parsing templates---the subject of our next section---but it also leads to an alternative, more game-like way to determine whether a type `X` within the definition of a class template refers to a current instantiation or an unknown specialization: If another programmer can write an explicit specialization (described in detail in [Chapter [16]]) such that `X` refers to that specialization, then `X` refers to an unknown specialization. For example, consider the instantiation of the type `C<int>::J` in the context of the above example: We know the definition of `C<T>::J` used to instantiate the concrete type (since that's the type we're instantiating). Moreover, because an explicit specialization cannot specialize a template or member of a template without also specializing all of the enclosing templates or members, `C<int>` will be instantiated from the enclosing class definition. Hence, the references to `J` and `C<int>` (where `Type` is `int`) within `J` refer to a current instantiation. On the other hand, one could write an explicit specialization for `C<int>::I` as follows:
+When a type refers to a current instantiation, the contents of that instantiated class are guaranteed to be instantiated from the class template or nested class thereof that is currently being defined. This has implications for name lookup when parsing templates---the subject of our next section---but it also leads to an alternative, more game-like way to determine whether a type `X` within the definition of a class template refers to a current instantiation or an unknown specialization: If another programmer can write an explicit specialization (described in detail in [Chapter [16]) such that `X` refers to that specialization, then `X` refers to an unknown specialization. For example, consider the instantiation of the type `C<int>::J` in the context of the above example: We know the definition of `C<T>::J` used to instantiate the concrete type (since that's the type we're instantiating). Moreover, because an explicit specialization cannot specialize a template or member of a template without also specializing all of the enclosing templates or members, `C<int>` will be instantiated from the enclosing class definition. Hence, the references to `J` and `C<int>` (where `Type` is `int`) within `J` refer to a current instantiation. On the other hand, one could write an explicit specialization for `C<int>::I` as follows:
 
 [Click here to view code image]
 
@@ -4667,7 +2860,7 @@ Here, the specialization of `C<int>::I` provides a completely different definiti
 
 Two fundamental activities of compilers for most programming languages are *tokenization*---also called *scanning* or *lexing*---and parsing. The tokenization process reads the source code as a sequence of characters and generates a sequence of tokens from it. For example, on seeing the sequence of characters `int* p = 0;`, the "tokenizer" will generate token descriptions for a keyword `int`, a symbol/operator `*`, an identifier `p`, a symbol/operator `=`, an integer literal `0`, and a symbol/operator `;`.
 
-A parser will then find known patterns in the token sequence by recursively reducing tokens or previously found patterns into higher level constructs. For example, the token `0` is a valid *expression*, the combination `*` followed by an identifier `p` is a valid *declarator*, and that declarator followed by "`=`" followed by the expression "`0`" is a valid *init-declarator*. Finally, the keyword `int` is a known type name, and, when followed by the init-declarator `*p = 0`, you get the initializing declaration of `p`.
+A parser will then find known patterns in the token sequence by recursively reducing tokens or previously found patterns into higher level constructs. For example, the token `0` is a valid *expression*, the combination `*` followed by an identifier `p` is a valid *declarator*, and that declarator followed by "`=" followed by the expression "`0" is a valid *init-declarator*. Finally, the keyword `int` is a known type name, and, when followed by the init-declarator `*p = 0`, you get the initializing declaration of `p`.
 
 #### 13.3.1 Context Sensitivity in Nontemplates 
 
@@ -4767,7 +2960,7 @@ Before C++11, that last line of code was equivalent to `G[:S> gs;`, which is cle
 
 [Click here to view code image]
 
-[#define] F(X) X \## :\
+#define F(X) X \## :\
 \
 int a[] = , i = 1;\
 int n = a F(<::)i];       // valid in C++98/C++03, but not in C++11
@@ -4836,7 +3029,7 @@ Furthermore, the `typename` prefix is *not allowed* unless at least the first tw
 
 template<typename~1~ T>
 struct S : typename~2~ X<T>::Base {
-    S() : typename~3~ X<T>::Base[(typename]~4~ X<T>::Base(0)) {
+    S() : typename~3~ X<T>::Base(typename]~4~ X<T>::Base(0)) {
     }
     typename~5~ X<T> f() {
         typename~6~ X<T>::C \* p;  // declaration of pointer [p]\
@@ -4877,11 +3070,11 @@ class Weird {
   public:
     void case1 (\
             typename Shell<T>:[:template] In<N>:[:template] Deep<N>\* p) {
-        p->template Deep<N>::f(); *[// inhibit virtual call]*\
+        p->template Deep<N>::f(); // inhibit virtual call]*\
     }
      void case2 (\
             typename Shell<T>:[:template] In<N>:[:template] Deep<N>& p) {
-        p.template Deep<N>::f(); *[// inhibit virtual call]*\
+        p.template Deep<N>::f(); // inhibit virtual call]*\
     }
 };
 
@@ -4899,8 +3092,8 @@ Using declarations can bring in names from two places: namespaces and classes. T
 
 class BX {
   public:
-    void f[(int]);
-    void f[(char const]\*);
+    void f(int);
+    void f(char const]\*);
     void g();
 };
 \
@@ -5037,7 +3230,7 @@ What if we apply `sizeof` on a value-dependent expression?
 
 template<typename T> void maybeDependent(T const& x)
 {
-  [sizeof]([sizeof](x));
+  [sizeof]([sizeof](x]));
 }
 
 Here, the inner `sizeof` expression is value-dependent, as noted above. However, the outer `sizeof` expression always computes the size of a `std::size_t`, so both its type and constant value are consistent across all instantiations of the template, despite the innermost expression (`x`) being type-dependent. Any expression that involves a template parameter is an *instantiation-dependent expression*,[13] even if both its type and constant value are invariant across valid instantiations. However, an instantiation-dependent expression may turn out to be invalid when instantiated. For example, instantiating `maybeDependent()` with an incomplete class type will trigger an error, because `sizeof` cannot be applied to such types.
@@ -5336,7 +3529,7 @@ class C {
 };                 // may be used for implicit conversions
 \
 void candidate(C[<double]>);  // #1
-void candidate[(int])      // #2
+void candidate(int)      // #2
 \
 int main()
 {
@@ -5424,7 +3617,7 @@ class Tricky {
         Danger<N> anonymous;       // OK until [Tricky] is instantiated with [N<=0]\
         int align;\
     };
-    void unsafe(T (\*p)[N]);        // OK until [Tricky] is instantiated with [N<=0]\
+    void unsafe(T (\*p)[N);        // OK until [Tricky] is instantiated with [N<=0]\
     void error() {
         Danger<-1> boom;           // always ERROR (which not all compilers detect)
     }
@@ -5432,15 +3625,15 @@ class Tricky {
 
 A standard C++ compiler will examine these template definitions to check the syntax and general semantic constraints. While doing so, it will "assume the best" when checking constraints involving template parameters. For example, the parameter `N` in the member `Danger::arr` could be zero or negative (which would be invalid), but it is assumed that this isn't the case.[4] The definitions of `inclass()`, `struct Nested`, and the anonymous union are thus not a problem.
 
-For the same reason, the declaration of the member `unsafe(T (*p)[N])` is not a problem, as long as `N` is an unsubstituted template parameter.
+For the same reason, the declaration of the member `unsafe(T (*p)[N)` is not a problem, as long as `N` is an unsubstituted template parameter.
 
-The default argument specification (`= 3`) on the declaration of the member `noBodyHere()` is suspicious because the template `Safe<>` isn't initializable with an integer, but the assumption is that either the default argument won't actually be needed for the generic definition of `Safe<T>` or that `Safe<T>` will be specialized (see [Chapter [16]]) to enable initialization with an integer value. However, the definition of the member function `error()` is an error even when the template is not instantiated, because the use of `Danger<-1>` requires a complete definition of the class `Danger<-1>`, and generating that class runs into an attempt to define an array with negative size. Interestingly, while the standard clearly states that this code is invalid, it also allows compilers not to diagnose the error when the template instance is not actually used. That is, since `Tricky<T,N>::error()` is not used for any concrete `T` and `N`, a compiler is not required to issue an error for this case. For example, GCC and Visual C++ do not diagnose this error at the time of this writing.
+The default argument specification (`= 3`) on the declaration of the member `noBodyHere()` is suspicious because the template `Safe<>` isn't initializable with an integer, but the assumption is that either the default argument won't actually be needed for the generic definition of `Safe<T>` or that `Safe<T>` will be specialized (see [Chapter [16]) to enable initialization with an integer value. However, the definition of the member function `error()` is an error even when the template is not instantiated, because the use of `Danger<-1>` requires a complete definition of the class `Danger<-1>`, and generating that class runs into an attempt to define an array with negative size. Interestingly, while the standard clearly states that this code is invalid, it also allows compilers not to diagnose the error when the template instance is not actually used. That is, since `Tricky<T,N>::error()` is not used for any concrete `T` and `N`, a compiler is not required to issue an error for this case. For example, GCC and Visual C++ do not diagnose this error at the time of this writing.
 
 Now let's analyze what happens when we add the following definition:
 
 Tricky<int, -1> inst;
 
-This causes the compiler to (fully) instantiate `Tricky<int, -1>` by substituting `int` for `T` and `-1` for `N` in the definition of template `Tricky<>`. Not all the member definitions will be needed, but the default constructor and the destructor (both implicitly declared in this case) are definitely called, and hence their definitions must be available somehow (which is the case in our example, since they are implicitly generated). As explained above, the members of `Tricky<int, -1>` are partially instantiated (i.e., their *declarations* are substituted): That process can potentially result in errors. For example, the declaration of `unsafe(T (*p)[N])` creates an array type with a negative of number elements, and that is an error. Similarly, the member `anonymous` now triggers an error, because type `Danger<-1>` cannot be completed. In contrast, the definitions of the members `inclass()` and `struct Nested` are not yet instantiated, and thus no errors occur from their need for the complete type `Danger<-1>` (which contains an invalid array definition as we discussed earlier).
+This causes the compiler to (fully) instantiate `Tricky<int, -1>` by substituting `int` for `T` and `-1` for `N` in the definition of template `Tricky<>`. Not all the member definitions will be needed, but the default constructor and the destructor (both implicitly declared in this case) are definitely called, and hence their definitions must be available somehow (which is the case in our example, since they are implicitly generated). As explained above, the members of `Tricky<int, -1>` are partially instantiated (i.e., their *declarations* are substituted): That process can potentially result in errors. For example, the declaration of `unsafe(T (*p)[N)` creates an array type with a negative of number elements, and that is an error. Similarly, the member `anonymous` now triggers an error, because type `Danger<-1>` cannot be completed. In contrast, the definitions of the members `inclass()` and `struct Nested` are not yet instantiated, and thus no errors occur from their need for the complete type `Danger<-1>` (which contains an invalid array definition as we discussed earlier).
 
 As written, when instantiating a template, in practice, the definitions of virtual members should also be provided. Otherwise, linker errors are likely to occur. For example:
 
@@ -5555,7 +3748,7 @@ void f1(T x)
     g1(x);  // #1
 }
 \
-void g1[(int])
+void g1(int)
 {
 }
 \
@@ -5580,12 +3773,12 @@ class S {
 [unsigned long] h()
 {
     // #2
-    return [(unsigned long][)sizeof](S[<int]>);
+    return (unsigned long][)sizeof](S[<int]>);
     // #3
 }
 // #4
 
-Again, the function scope points *#2* and *#3* cannot be POIs because a definition of a namespace scope class `S<int>` cannot appear there (and templates can generally not appear in function scope[8]). If we were to follow the rule for function template instances, the POI would be at point *#4* , but then the expression `sizeof(S<int>)` is invalid because the size of `S<int>` cannot be determined until point *#4* is reached. Therefore, the POI for a reference to a generated class instance is defined to be the point immediately before the nearest namespace scope declaration or definition that contains the reference to that instance. In our example, this is point *#1* .
+Again, the function scope points *#2* and *#3* cannot be POIs because a definition of a namespace scope class `S<int>` cannot appear there (and templates can generally not appear in function scope[8). If we were to follow the rule for function template instances, the POI would be at point *#4* , but then the expression `sizeof(S<int>)` is invalid because the size of `S<int>` cannot be determined until point *#4* is reached. Therefore, the POI for a reference to a generated class instance is defined to be the point immediately before the nearest namespace scope declaration or definition that contains the reference to that instance. In our example, this is point *#1* .
 
 When a template is actually instantiated, the need for additional instantiations may appear. Consider a short example:
 
@@ -5757,12 +3950,12 @@ void f(T)
 }
 \
 // four valid explicit instantiations:
-[template void] f[<int]>[(int]);
-[template void] f<>[(float]);
-[template void] f[(long]);
-[template void] f[(char]);
+[template void] f[<int]>(int);
+[template void] f<>(float);
+[template void] f(long);
+[template void] f(char);
 
-Note that every instantiation directive is valid. Template arguments can be deduced (see [Chapter [15]]).
+Note that every instantiation directive is valid. Template arguments can be deduced (see [Chapter [15]).
 
 Members of class templates can also be explicitly instantiated in this way:
 
@@ -5882,26 +4075,26 @@ The following example illustrates its basic operation:
 [Click here to view code image]
 
 template<typename T> [bool] f(T p) {
-  [if constexpr] [(sizeof](T) <= [sizeof][(long long])) {
+  [if constexpr] (sizeof](T) <= [sizeof](long long)) {
     return p>0;\
   } [else] {
     return p.compare(0) > 0;\
   }
 }
-[bool] g[(int] n) {
+[bool] g(int] n) {
   return f(n);  // OK
 }
 
 The compile-time `if` is an *if* statement, where the `if` keyword is immediately followed by the `constexpr` keyword (as in this example).[19] The parenthesized condition that follows must have a constant Boolean value (implicit conversions to `bool` are included in that consideration). The compiler therefore knows which branch will be selected; the other branch is called the *discarded branch*. Of particular interest is that during the instantiation of templates (including generic lambdas), the discarded branch is *not* instantiated. That is necessary for our example to be valid: We are instantiating `f(T)` with `T = int`, which means that the *else* branch is discarded. If it weren't discarded, it would be instantiated and we'd run into an error for the expression `p.compare(0)` (which isn't valid when `p` is a simple integer).
 
-Prior to C++17 and its *constexpr if* statements, avoiding such errors required explicit template specialization or overloading (see [Chapter [16]]) to achieve similar effects.
+Prior to C++17 and its *constexpr if* statements, avoiding such errors required explicit template specialization or overloading (see [Chapter [16]) to achieve similar effects.
 
 The example above, in C++14, might be implemented as follows:
 
 [Click here to view code image]
 
 template<[bool] b> struct Dispatch  [b] is [false]\
-  [static bool] f(T p)  [true])
+  [static bool] f(T p)  [true)
     return p.compare(0) > 0;\
   }
 };
@@ -5913,10 +4106,10 @@ template<> struct Dispatch[<true]> {
 };
 \
 template<typename T> [bool] f(T p) {
-  return Dispatch[<sizeof](T) <= [sizeof][(long long])>::f(p);
+  return Dispatch[<sizeof](T) <= [sizeof](long long)>::f(p);
 }
 \
-[bool] g[(int] n) {
+[bool] g(int] n) {
   return f(n);  // OK
 }
 
@@ -5929,7 +4122,7 @@ Another very handy use of *constexpr if* is expressing the recursion needed to h
 template<typename Head, typename... Remainder>
 void f(Head&& h, Remainder&&... r) {
    doSomething(std::forward<Head>(h));
-  [if constexpr] [(sizeof]...(r) != 0) {
+  [if constexpr] (sizeof]...(r) != 0) {
     // handle the remainder recursively (perfectly forwarding the arguments):
     f(std::forward<Remainder>(r)...);
   }
@@ -5943,7 +4136,7 @@ Even in nontemplate contexts, *constexpr if* statements have a somewhat unique e
 
 void h();
 void g() {
-  [if constexpr] [(sizeof][(int]) == 1) {
+  [if constexpr] (sizeof](int) == 1) {
     h();
   }
 }
@@ -5997,7 +4190,7 @@ A few years later, Ville Voutilainen came back with a proposal (P0128) that was 
 
 ^[1]^ The term *instantiation* is sometimes also used to refer to the creation of objects from types. In this book, however, it always refers to *template* instantiation.
 
-^[2]^ The term *specialization* is used in the general sense of an entity that is a specific instance of a template (see [Chapter [10]]). It does not refer to the *explicit specialization* mechanism described in [Chapter [16]].
+^[2]^ The term *specialization* is used in the general sense of an entity that is a specific instance of a template (see [Chapter [10]). It does not refer to the *explicit specialization* mechanism described in [Chapter [16]].
 
 ^[3]^ Anonymous unions are always special in this way: Their members can be considered to be members of the enclosing class. An anonymous union is primarily a construct that says that some class members share the same storage.
 
@@ -6063,7 +4256,7 @@ T max (T a, T b)
 \
 auto g = max(1, 1.0);
 
-Here the first call argument is of type `int`, so the parameter `T` of our original `max()` template is tentatively deduced to be `int`. The second call argument is a `double`, however, and so `T` should be `double` for this argument: This conflicts with the previous conclusion. Note that we say that "the deduction process fails," not that "the program is invalid." After all, it is possible that the deduction process would succeed for another template named `max` (function templates can be overloaded much like ordinary functions; see Section [[1.5]] on page [[15]] and [Chapter [16]]).
+Here the first call argument is of type `int`, so the parameter `T` of our original `max()` template is tentatively deduced to be `int`. The second call argument is a `double`, however, and so `T` should be `double` for this argument: This conflicts with the previous conclusion. Note that we say that "the deduction process fails," not that "the program is invalid." After all, it is possible that the deduction process would succeed for another template named `max` (function templates can be overloaded much like ordinary functions; see Section [[1.5]] on page [[15]] and [Chapter [16]).
 
 If all the deduced template parameters are consistently determined, the deduction process can still fail if substituting the arguments in the rest of the function declaration results in an invalid construct. For example:
 
@@ -6075,7 +4268,7 @@ typename T::ElementT at (T a, int i)
     return a[i];\
 }
 \
-void f [(int]\* p)
+void f (int]\* p)
 {
     int x = at(p, 7);
 }
@@ -6108,11 +4301,11 @@ The fact that no decay occurs for arguments bound to reference parameters can be
 template<typename T>
 T const& max(T const& a, T const& b);
 
-It would be reasonable to expect that for the expression `max("Apple", "Pie") T` is deduced to be `char const*`. However, the type of `"Apple"` is `char const[6]`, and the type of `"Pie"` is `char const[4]`. No array-to-pointer decay occurs (because the deduction involves reference parameters), and therefore `T` would have to be both `char[6]` and `char[4]` for deduction to succeed. That is, of course, impossible. See Section [[7.4]] on page [[115]] for a discussion about how to deal with this situation.
+It would be reasonable to expect that for the expression `max("Apple", "Pie") T` is deduced to be `char const*`. However, the type of "Apple"` is `char const[6]`, and the type of "Pie"` is `char const[4]`. No array-to-pointer decay occurs (because the deduction involves reference parameters), and therefore `T` would have to be both `char[6]` and `char[4]` for deduction to succeed. That is, of course, impossible. See Section [[7.4]] on page [[115]] for a discussion about how to deal with this situation.
 
 ### 15.2 Deduced Contexts 
 
-Parameterized types that are considerably more complex than just "`T`" can be matched to a given argument type. Here are a few examples that are still fairly basic:
+Parameterized types that are considerably more complex than just "`T" can be matched to a given argument type. Here are a few examples that are still fairly basic:
 
 [Click here to view code image]
 
@@ -6121,7 +4314,7 @@ Parameterized types that are considerably more complex than just "`T`" can be ma
 \
     template<typename E,\
     int N>
-    void f2(E(&)[N]);
+    void f2(E(&)[N);
 \
     template<typename\
     T1, typename T2, typename T3>
@@ -6129,10 +4322,10 @@ Parameterized types that are considerably more complex than just "`T`" can be ma
 \
     class S {
       [public:]\
-        void f[(double]\*);
+        void f(double]\*);
     };
 \
-    void g [(int]\*\*\* ppp)
+    void g (int]\*\*\* ppp)
     {
         [bool] b[42];\
         f1(ppp);   // deduces [T] to be [inT*\
@@ -6153,12 +4346,12 @@ template<int N>
 class X {
   public:
     using I = int;\
-    void f[(int]) {
+    void f(int) {
     }
 };
 \
 template<int N>
-void fppm[(void] (X<N>::\*p)[(typename] X<N>::I));;\
+void fppm(void] (X<N>::\*p)(typename] X<N>::I));;\
 \
 int main()
 {
@@ -6190,7 +4383,7 @@ There are several situations in which the pair (*A*, *P*) used for deduction is 
 template<typename T>
 void f(T, T);
 \
-void (\*pf)[(char], [char]) = &f;
+void (\*pf)(char], [char) = &f;
 
 In this example, *P* is `void(T, T)` and *A* is `void(char, char)`. Deduction succeeds with `T` substituted with `char`, and `pf` is initialized to the address of the specialization `f<char>`.
 
@@ -6217,7 +4410,7 @@ class S {
 
 In this case, the pair (*P*, *A*) is obtained as if it involved an argument of the type to which we are attempting to convert and a parameter type that is the return type of the conversion function. The following code illustrates one variation:
 
-void f[(int] (&)[20]);
+void f(int] (&)[20);
 \
 void g(S s)
 {
@@ -6269,7 +4462,7 @@ The deduction process matches each argument to each parameter to determine the v
 template<typename First, typename... Rest>
 void f(First first, Rest... rest);
 \
-void g[(int] i, [double] j,int* k)
+void g(int] i, [double] j,int* k)
 {
     f(i, j, k); // deduces [First] to int, [Rest] to [[double, inT[}]\
 }
@@ -6342,7 +4535,7 @@ template<[char]... cs>
 [int operato][r\"" \_B7()
 {
   std::array<[char],[sizeof]...(cs)> chars;       //initialize array of passed chars
-  [for] [(char] c : chars)
+  [for] (char] c : chars)
      std::cout << "'" << c << "'";\
   }
   std::cout << '\n';\
@@ -6414,7 +4607,7 @@ As introduced in Section [[6.1]] on page [[91]], template argument deduction beh
 
 [Click here to view code image]
 
-template<typename T> void f(T&& p); *[// p is a forwarding reference]*\
+template<typename T> void f(T&& p); // p is a forwarding reference]*\
 \
 void g()
 {
@@ -6467,7 +4660,7 @@ void g(C&&);
 template<typename T>
 void forwardToG(T&& x)
 {
-  g([static_cast]<T&&>(x));      // forward [x] to [g()]\
+  g([static_cast]<T&&>(x]));      // forward [x] to [g()]\
 }
 \
 void foo()
@@ -6514,7 +4707,7 @@ Despite its name, perfect forwarding is not, in fact, "perfect" in the sense tha
 
 [Click here to view code image]
 
-void g[(int]\*);
+void g(int]\*);
 void g(...);
 \
 template<typename T> void forwardToG(T&& x)
@@ -6565,10 +4758,10 @@ The results of the special deduction rule for rvalue references are very useful 
 
 [Click here to view code image]
 
-void int_lvalues[(int]&);                   // accepts lvalues of type int\
+void int_lvalues(int]&);                   // accepts lvalues of type int\
 template<typename T> void lvalues(T&);    // accepts lvalues of any type
 \
-void int_rvalues[(int]&&);                 // accepts rvalues of type int\
+void int_rvalues(int]&&);                 // accepts rvalues of type int\
 template<typename T> void anything(T&&); // SURPRISE: accepts lvalues and
                                          // rvalues of any type
 
@@ -6605,7 +4798,7 @@ For example, consider a pair of function templates that extracts the beginning i
 [Click here to view code image]
 
 template<typename T, [unsigned] N>
-T* begin(T (&array)[N])
+T* begin(T (&array)[N)
 {
   return array;\
 }
@@ -6759,7 +4952,7 @@ std::string maxWithHello(std::string s)
   return ::max(s, "hello");
 }
 
-Here, template argument deduction from the first argument deduces `T` to `std::string`, while deduction from the second argument deduces `T` to `char[6]`, so template argument deduction fails, because both parameters use the same template parameter. This failure may come as a surprise, because the string literal `"hello"` is implicitly convertible to `std::string`, and the call
+Here, template argument deduction from the first argument deduces `T` to `std::string`, while deduction from the second argument deduces `T` to `char[6]`, so template argument deduction fails, because both parameters use the same template parameter. This failure may come as a surprise, because the string literal "hello"` is implicitly convertible to `std::string`, and the call
 
 `::max<std::string>(s, "helloa"`)
 
@@ -6845,24 +5038,24 @@ void f(T, int) [noexcept](nonexistent(T()));// #1
 template<typename T>
 void f(T, ...);  // #2 (C-style vararg function)
 \
-void test[(int] i)
+void test(int] i)
 {
   f(i, i);   // ERROR: chooses #1 , but the expression [nonexistent(T())] is ill-formed
 }
 
-The `noexcept` specification in the function marked *#1* tries to call a nonexistent function. Normally, such an error directly within the declaration of the function template would trigger a template argument deduction failure (SFINAE), allowing the call `f(i, i)` to succeed by selecting the function marked *#2* that is an otherwise lesser match (matching with an ellipsis parameter is the worst kind of match from the point of overload resolution; see [Appendix [C]]). However, because exception spec-ifications do not participate in template argument deduction, overload resolution selects *#1* and the program becomes ill-formed when the `noexcept` specification is later instantiated.
+The `noexcept` specification in the function marked *#1* tries to call a nonexistent function. Normally, such an error directly within the declaration of the function template would trigger a template argument deduction failure (SFINAE), allowing the call `f(i, i)` to succeed by selecting the function marked *#2* that is an otherwise lesser match (matching with an ellipsis parameter is the worst kind of match from the point of overload resolution; see [Appendix [C]). However, because exception spec-ifications do not participate in template argument deduction, overload resolution selects *#1* and the program becomes ill-formed when the `noexcept` specification is later instantiated.
 
 The same rules apply to exception specifications that list the potential exception types:
 
 [Click here to view code image]
 
 template<typename T>
-void g(T, int) [throw][(typename] T::Nonexistent);  //#1
+void g(T, int) [throw](typename] T::Nonexistent);  //#1
 \
 template<typename T>
 void g(T, ...);                                //#2
 \
-void test[(int] i)
+void test(int] i)
 {
   g(i, i);// ERROR: chooses #1 , but the type [T::Nonexistent] is ill-formed
 }
@@ -6920,7 +5113,7 @@ It is occasionally useful to specify an empty template argument list to ensure t
 
 [Click here to view code image]
 
-int f[(int]);                    // #1
+int f(int);                    // #1
 template<typename T> T f(T);   // #2
 \
 int main() {
@@ -7068,7 +5261,7 @@ This technique is frequently used in generic code to bind the result of a functi
 [Click here to view code image]
 
 template<typename Container> void g(Container c) {
-  [for] [(auto]&& x: c) {
+  [for] (auto]&& x: c) {
     ...
   }
 }
@@ -7081,7 +5274,7 @@ In addition to references, one can combine the `auto` specifier to make a variab
 
 template<typename T> struct X  m; };
 [auto const] N = 400u;                // OK: constant of type [unsigned int]\
-auto\* gp = [(void]\*[)nullptr];          // OK: [gp] has type [void\
+auto\* gp = (void]\*[)nullptr];          // OK: [gp] has type [void\
 [auto const] S::\*pm = &X[<int]>::m;     // OK: [pm] has type [int const X<int>::\
 X<auto> xa = X[<int]>();              // ERROR: auto in template argument
 [int const auto]::\*pm2 = &X[<int]>::m;  // ERROR: auto is part of the "declarator"
@@ -7115,7 +5308,7 @@ The same mechanism exists for lambdas by default: If no return type is specified
 
 [Click here to view code image]
 
-auto lm = [] [(int] x)  f(x); };
+auto lm = [] (int] x)  f(x); };
             // same as: [[] (int x) -> auto] [ [return f(x);] [}][;]
 
 Functions can be declared separately from their definition. That is true with functions whose return type is deduced also:
@@ -7263,14 +5456,14 @@ void g (std::string&& s)
 {
   // check the type of [s]:
   std::is_lvalue_reference<decltype(s)>::value;    // false
-  std::is_rvalue_reference<decltype(s)>::value;    // true ([s] as declared)
+  std::is_rvalue_reference<decltype(s)>::value;    // true ([s] as declared])
   std::is_same<decltype(s),std::string&>::value;   // false
   std::is_same<decltype(s),std::string&&>::value;  // true
 \
   // check the value category of [s] used as expression:
-  std::is_lvalue_reference<decltype((s))>::value;   // true ([s] is an lvalue)
+  std::is_lvalue_reference<decltype((s))>::value;   // true ([s] is an lvalue])
   std::is_rvalue_reference<decltype((s))>::value;   // false
-  std::is_same<decltype((s)),std::string&>::value;  // true ([T&] signals an lvalue)
+  std::is_same<decltype((s)),std::string&>::value;  // true ([T&] signals an lvalue])
   std::is_same<decltype((s)),std::string&&>::value; // false
 }
 
@@ -7284,7 +5477,7 @@ which means that `decltype` produces the declared type of `s`, `std::string&&`. 
 
 [Click here to view code image]
 
-decltype((s))    //check the value category of [(s)]
+decltype((s))    //check the value category of (s)]
 
 Our expression refers to a variable by name and is thus an lvalue:[11] By the rules above, this means that `decltype(s)` is an ordinary (i.e., lvalue) reference to `std::string` (since the type of `(s)` is `std::string`). This is one of the few places in C++ where parenthesizing an expression changes the meaning of the program other than affecting the associativity of operators.
 
@@ -7369,7 +5562,7 @@ Unlike `auto`, `decltype(auto)` does not allow specifiers or declarator operator
 
 [Click here to view code image]
 
-decltype(auto)* p = [(void]\*[)nullptr];  // invalid
+decltype(auto)* p = (void]\*[)nullptr];  // invalid
 [int const] N = 100;\
 decltype(auto) const NN = N\*N;      // invalid
 
@@ -7401,7 +5594,7 @@ template<decltype(auto) Val> class S\
   ...
 };
 [constexpr int] c = 42;\
-[extern int] v = 42;\
+extern int v = 42;\
 S<c> sc;   // #1 produces [S<42>]\
 S<(v)> sv; // #2 produces [S<(int&)v>]
 
@@ -7422,7 +5615,7 @@ In this example, the type of the parameter `N` of function template `f<>()` is d
 
 [Click here to view code image]
 
-template<auto V> int f[(decltype](V) p);
+template<auto V> int f(decltype](V) p);
 int r1 = deduce<42>(42);  // OK
 int r2 = deduce(42);      // ERROR: [decltype(V)] is a nondeduced context
 
@@ -7495,7 +5688,7 @@ A somewhat parallel special situation can also occur with placeholders for deduc
 
 [Click here to view code image]
 
-auto f[(bool] b) {
+auto f(bool] b) {
   if (b) {
     return 42.0;      // deduces return type [double]\
   } [else] {
@@ -7507,7 +5700,7 @@ In this case, each return statement is deduced independently, but if different t
 
 [Click here to view code image]
 
-auto f[(int] n)
+auto f(int] n)
 {
   if (n > 1) {
     return n\*f(n-1);    // ERROR: type of [f(n-1)] unknown
@@ -7520,7 +5713,7 @@ but the following otherwise equivalent code is fine:
 
 [Click here to view code image]
 
-auto f[(int] n)
+auto f(int] n)
 {
   if (n <= 1) {
     return 1;           // return type is deduced to be int\
@@ -7556,7 +5749,7 @@ auto addA(T t, U u) -> decltype(t+u)
 \
 void addA(...);
 template<typename T, typename U>
-auto addB(T t, U u) -> decltype[(auto])
+auto addB(T t, U u) -> decltype(auto)
 {
   return t + u;\
 }
@@ -7701,7 +5894,7 @@ template<typename Iter>
 Iter findNegative(Iter first, Iter last)
 {
   return std::find_if(first, last,\
-                      [] [(typename] std::iterator_traits<Iter>::value_type\
+                      [] (typename] std::iterator_traits<Iter>::value_type\
                           value) {
                         return value < 0;\
                       });
@@ -7715,7 +5908,7 @@ template<typename Iter>
 Iter findNegative(Iter first, Iter last)
 {
   return std::find_if(first, last,\
-                      [] [(auto] value) {
+                      [] (auto] value) {
                         return value < 0;\
                      });
 }
@@ -7734,7 +5927,7 @@ class *SomeCompilerSpecificNameX*\
 {
   public:
     *SomeCompilerSpecificNameX*();  // only callable by the compiler
-    [bool operator]() [(int] i) const\
+    [bool operator]() (int] i) const\
     {
       return i < 0;\
     }
@@ -7745,7 +5938,7 @@ If you check the type category for a lambda, `std::is_class<>` will yield `true`
 A lambda expression thus results in an object of this class (the closure type). For example:
 
 foo(...,\
-    [] [(int] i) {
+    [] (int] i) {
       return i < 0;\
     });
 
@@ -7775,14 +5968,14 @@ class *SomeCompilerSpecificNameY* {
     *SomeCompilerSpecificNameY*(int x, int y)  //only callable by the compiler
      : \_x(x), \_y(y) {
     }
-    [bool operator]() [(int] i) const {
+    [bool operator]() (int] i) const {
       return i > \_x && i < \_y;\
     }
 };
 
 For a generic lambda, the function call operator becomes a member function template, so our simple generic lambda
 
-[] [(auto] i) {
+[] (auto] i) {
   return i < 0;\
 }
 
@@ -7814,7 +6007,7 @@ template<typename F, typename... Ts> void invoke (F f, Ts... ps)
 \
 int main()
 {
-  invoke([](auto x, auto y) {
+  invoke([](auto x, auto y]) {
             std::cout << x+y << '\n'\
          },\
          21, 21);
@@ -7881,17 +6074,17 @@ class C\
 };
 C c1(22, 44.3, "hi");  // OK in C++17: [T1] is int, [T2] is [double], [T3] is [char consT
 C c2(22, 44.3);        // OK in C++17: [T1] is int, [T2] and [T3] are [double]\
-C c3[(\"hi", "guy");     // OK in C++17: [T1], [T2], and [T3] are [char consT
+C c3(\"hi", "guy");     // OK in C++17: [T1], [T2], and [T3] are [char consT
 C c4;                  // ERROR: [T1] and [T2] are undefined
-C c5[(\"hi");            // ERROR: [T2] is undefined
+C c5(\"hi");            // ERROR: [T2] is undefined
 
 Note that *all* parameters must be determined by the deduction process or from default arguments. It is not possible to explicitly specify a few arguments and deduce others. For example:
 
 [Click here to view code image]
 
-C<string> c10[(\"hi"[,\"my", 42);     // ERROR: only [T1] explicitly specified, [T2] not deduced
+C<string> c10(\"hi"[,\"my", 42);     // ERROR: only [T1] explicitly specified, [T2] not deduced
 C<> c11(22, 44.3, 42);            // ERROR: neither [T1] nor [T2] explicitly specified
-C<string,string> c12[(\"hi"[,\"my");  // OK: [T1] and [T2] are deduced, [T3] has default
+C<string,string> c12(\"hi"[,\"my");  // OK: [T1] and [T2] are deduced, [T3] has default
 
 #### 15.12.1 Deduction Guides 
 
@@ -8046,7 +6239,7 @@ Prior to C++17, transformations like these (which are not uncommon) did not affe
 
 [Click here to view code image]
 
-template<typename> S[(typename] ValueArg<T>::Type) -> S<T>;
+template<typename> S(typename] ValueArg<T>::Type) -> S<T>;
 
 Recall from Section [[15.2]] on page [[271]] that a name qualifier like `ValueArg<T>::` is not a deduced context. So a deduction guide of this form is useless and will not resolve a declaration like `S x(12);`. In other words, a library writer performing this kind of transformation is likely to break client code in C++17.
 
@@ -8394,8 +6587,8 @@ details/funcoverload1.cpp
 \
 int main()
 {
-    std::cout << f[<int]\*>([(int]\*[)nullptr]);  // calls [f<T>(T)]\
-    std::cout << f[<int]>([(int]\*[)nullptr]);   // calls [f<T>(T*)]\
+    std::cout << f[<int]\*>((int]\*[)nullptr);  // calls [f<T>(T)]\
+    std::cout << f[<int]>((int]\*[)nullptr);   // calls [f<T>(T*)]\
 }
 
 This program has the following output:
@@ -8458,7 +6651,7 @@ void f1(T2, T1)
 \
 int main()
 {
-    f1<[char], [char]>[('a'], ['b']);  // ERROR: ambiguous
+    f1<[char], [char]>('a'], ['b');  // ERROR: ambiguous
 }
 
 Here, the function
@@ -8488,7 +6681,7 @@ void f1(T1, T2)
 \
 void g()
 {
-    f1<[char], [char]>[('a'], ['b']);
+    f1<[char], [char]>('a'], ['b');
 }
 \
 ***//* *translation unit 2:***\
@@ -8503,7 +6696,7 @@ void f1(T2, T1)
 \
 int main()
 {
-    f1<[char], [char]>[('a'], ['b']);
+    f1<[char], [char]>('a'], ['b');
     g();
 }
 
@@ -8519,8 +6712,8 @@ Reconsider our earlier example: We found that after substituting the given templ
 
 [Click here to view code image]
 
-std::cout << f[<int]\*>([(int]\*[)nullptr]);  // calls [f<T>(T)]\
-std::cout << f[<int]>([(int]\*[)nullptr]);   // calls [f<T>(T*)]
+std::cout << f[<int]\*>((int]\*[)nullptr);  // calls [f<T>(T)]\
+std::cout << f[<int]>((int]\*[)nullptr);   // calls [f<T>(T*)]
 
 However, a function is selected even when explicit template arguments are not provided. In this case, template argument deduction comes into play. Let's slightly modify function `main()` in the previous example to discuss this mechanism:
 
@@ -8545,15 +6738,15 @@ int f(T*)
 int main()
 {
     std::cout << f(0);              // calls [f<T>(T)]\
-    std::cout << f[(nullptr]);        // calls [f<T>(T)]\
-    std::cout << f([(int]\*[)nullptr]);  // calls [f<T>(T*)]\
+    std::cout << f(nullptr);        // calls [f<T>(T)]\
+    std::cout << f((int]\*[)nullptr);  // calls [f<T>(T*)]\
 }
 
 Consider the first call, `f(0)`: The type of the argument is `int`, which matches the type of the parameter of the first template if we substitute `T` with `int`. However, the parameter type of the second template is always a pointer and, hence, after deduction, only an instance generated from the first template is a candidate for the call. In this case overload resolution is trivial.
 
 The same applies to the second call: `(f(nullptr):` The type of the argument is `std::nullptr_t`, which again only matches for the first template.
 
-The third call (`f((int*)nullptr)`) is more interesting: Argument deduction succeeds for both templates, yielding the functions `f<int*>(int*)` and `f<int>(int*)`. From a traditional overload resolution perspective, both are equally good functions to call with an `int*` argument, which would suggest that the call is ambiguous (see [Appendix [C]]). However, in this sort of case, an additional overload resolution criterion comes into play: The function generated from the more specialized template is selected. Here (as we see shortly), the second template is considered more specialized and thus the output of our example is
+The third call (`f((int*)nullptr)`) is more interesting: Argument deduction succeeds for both templates, yielding the functions `f<int*>(int*)` and `f<int>(int*)`. From a traditional overload resolution perspective, both are equally good functions to call with an `int*` argument, which would suggest that the call is ambiguous (see [Appendix [C]). However, in this sort of case, an additional overload resolution criterion comes into play: The function generated from the more specialized template is selected. Here (as we see shortly), the second template is considered more specialized and thus the output of our example is
 
 `112`
 
@@ -8583,9 +6776,9 @@ template<typename T>
 void t(T*, T const\* = [nullptr], ...);
 \
 template<typename T>
-void t(T const\*, T*, T* = [nullptr]);
+void t(T const\*, T*, T* = [nullptr);
 \
-void example[(int]\* p)
+void example(int]\* p)
 {
     t(p, p);
 }
@@ -8613,7 +6806,7 @@ std::string f(T)
     return "Template";\
 }
 \
-std::string f[(int]&)
+std::string f(int]&)
 {
     return "Nontemplate";\
 }
@@ -8643,7 +6836,7 @@ std::string f(T&)
     return "Template";\
 }
 \
-std::string f[(int const]&)
+std::string f(int const]&)
 {
     return "Nontemplate";\
 }
@@ -8749,8 +6942,8 @@ int f(Ts\*...)
 int main()
 {
   std::cout << f(0, 0.0);                          // calls [f<>(Ts...)]\
-  std::cout << f([(int]\*[)nullptr], [(double]\*[)nullptr]); // calls [f<>(Ts\*...)]\
-  std::cout << f([(int]\*[)nullptr]);                   // calls [f<>(T*)]\
+  std::cout << f((int]\*[)nullptr], (double]\*[)nullptr); // calls [f<>(Ts\*...)]\
+  std::cout << f((int]\*[)nullptr);                   // calls [f<>(T*)]\
 }
 
 The output of this example, which we will discuss in a moment, is
@@ -8876,7 +7069,7 @@ int main()
     `S<void,int>  sv;`    // OK: uses #2 , definition available
     `S<void,char> e2;`    // ERROR: uses #1 , but no definition available
     `S<char,char> e3;`    // ERROR: uses #3 , but no definition available
-`}`\
+}\
 \
 template<>
 class S[<char], [char]>  #3
@@ -8947,7 +7140,7 @@ class Danger {
 };
 [char] buffer[Danger[<void]> ::max];  // uses generic value
 \
-[extern void] clear[(char]\*);
+[extern void] clear(char]\*);
 \
 int main()
 {
@@ -8964,10 +7157,10 @@ class Danger[<void]> {
     [enum] ;\
 };
 \
-void clear[(char]\* buf)
+void clear(char]\* buf)
 {
     // mismatch in array bound:
-    [for] [(int] k = 0; k<Danger[<void]> ::max; ++k) {
+    [for] (int] k = 0; k<Danger[<void]> ::max; ++k) {
       buf[k] = ['\\0'];\
     }
 }
@@ -8994,11 +7187,11 @@ int f(T*)                   // #2
     return 2;\
 }
 \
-template<> int f[(int])      // OK: specialization of #1
+template<> int f(int)      // OK: specialization of #1
 {
     return 3;\
 }
-template<> int f[(int]\*)    // OK: specialization of #2
+template<> int f(int]\*)    // OK: specialization of #2
 {
     return 4;\
 }
@@ -9013,7 +7206,7 @@ int f(T, T x = 42)
     return x;\
 }
 \
-template<> int f[(int], int = 35)  // ERROR
+template<> int f(int], int = 35)  // ERROR
 {
     return 0;\
 }
@@ -9026,8 +7219,8 @@ A full specialization is in many ways similar to a normal declaration (or rather
 
 [Click here to view code image]
 
-[#ifndef] TEMPLATE_G\_HPP\
-[#define] TEMPLATE_G\_HPP\
+#ifndef TEMPLATE_G\_HPP\
+#define TEMPLATE_G\_HPP\
 \
 // template definition should appear in header file:
 template<typename T>
@@ -9038,9 +7231,9 @@ int g(T, T x = 42)
 \
 // specialization declaration inhibits instantiations of the template;
 // definition should not appear here to avoid multiple definition errors
-template<> int g[(int], int y);
+template<> int g(int], int y);
 \
-[#endif] // TEMPLATE\_G\_HPP
+#endif // TEMPLATE\_G\_HPP
 
 • The corresponding implementation file defines the full specialization:
 
@@ -9048,7 +7241,7 @@ template<> int g[(int], int y);
 
 #include "template_g.hpp"\
 \
-template<> int g[(int], int y)
+template<> int g(int], int y)
 {
     return y/2;\
 }
@@ -9257,7 +7450,7 @@ Our code contains a problem because `List<void*>` recursively contains a member 
 template<>
 class List[<void]\*>  #3
     ...
-    void append [(void]\* p);
+    void append (void]\* p);
     [inline] std::size_t length() const;\
     ...
 };
@@ -9305,7 +7498,7 @@ template<typename Tail, typename... Ts>
 class Tuple<Tuple<Ts...>, Tail>;  // OK: pack expansion is at the end of a
                                // nested template argument list
 
-Every partial specialization---like every full specialization---is associated with the primary template. When a template is used, the primary template is always the one that is looked up, but then the arguments are also matched against those of the associated specializations (using template argument deduction, as described in [Chapter [15]]) to determine which template implementation is picked. Just as with function template argument deduction, the SFINAE principle applies here: If, while attempting to match a partial specialization an invalid construct is formed, that specialization is silently abandoned and another candidate is examined if one is available. If no matching specializations is found, the primary template is selected. If multiple matching specializations are found, the most specialized one (in the sense defined for overloaded function templates) is selected; if none can be called most specialized, the program contains an ambiguity error.
+Every partial specialization---like every full specialization---is associated with the primary template. When a template is used, the primary template is always the one that is looked up, but then the arguments are also matched against those of the associated specializations (using template argument deduction, as described in [Chapter [15]) to determine which template implementation is picked. Just as with function template argument deduction, the SFINAE principle applies here: If, while attempting to match a partial specialization an invalid construct is formed, that specialization is silently abandoned and another candidate is examined if one is available. If no matching specializations is found, the primary template is selected. If multiple matching specializations are found, the most specialized one (in the sense defined for overloaded function templates) is selected; if none can be called most specialized, the program contains an ambiguity error.
 
 Finally, we should point out that it is entirely possible for a class template partial specialization to have more or fewer parameters than the primary template. Consider our generic template `List`, declared at point *#1* , again. We have already discussed how to optimize the list-of-pointers case, but we may want to do the same with certain pointer-to-member types. The following code achieves this for pointer-to-member-pointers:
 
@@ -9335,7 +7528,7 @@ class List<T* C::\*>  #5
     using ElementType = T* C::\*;\
     ...
     [inline void] append(ElementType pm) {
-        impl.append(([void]\* C::\*)pm);
+        impl.append(([void]\* C::\*])pm);
     }
     [inline] std::size_t length() const {
         return impl.length();
@@ -9370,7 +7563,7 @@ As one would expect, the syntax is similar to full variable template specializat
 
 template<typename T> [constexpr] std::size_t SZ = [sizeof](T);
 \
-template<typename T> [constexpr] std::size_t SZ<T&> = [sizeof][(void]\*);
+template<typename T> [constexpr] std::size_t SZ<T&> = [sizeof](void]\*);
 
 As with the full specialization of variable templates, the type of a partial specialization is not required to match that of the primary template:
 
@@ -9389,7 +7582,7 @@ Full template specialization was part of the C++ template mechanism from the sta
 
 The ability of template specializations to terminate an otherwise infinitely recursive template definition (such as the `List<T*>` example presented in Section [[16.4]] on page [[348]]) was known for a long time. However, Erwin Unruh was perhaps the first to note that this could lead to the interesting notion of *template metaprogramming*: using the template instantiation mechanism to perform nontrivial computations at compile time. We devote [Chapter [23]] to this topic.
 
-You may legitimately wonder why only class templates and variable templates can be partially specialized. The reasons are mostly historical. It is probably possible to define the same mechanism for function templates (see [Chapter [17]]). In some ways, the effect of overloading function templates is similar, but there are also some subtle differences. These differences are mostly related to the fact that only the primary template needs to be looked up when a use is encountered. The specializations are considered only afterward, to determine which implementation should be used. In contrast, all overloaded function templates must be brought into an overload set by looking them up, and they may come from different namespaces or classes. This increases the likelihood of unintentionally overloading a template name somewhat.
+You may legitimately wonder why only class templates and variable templates can be partially specialized. The reasons are mostly historical. It is probably possible to define the same mechanism for function templates (see [Chapter [17]). In some ways, the effect of overloading function templates is similar, but there are also some subtle differences. These differences are mostly related to the fact that only the primary template needs to be looked up when a use is encountered. The specializations are considered only afterward, to determine which implementation should be used. In contrast, all overloaded function templates must be brought into an overload set by looking them up, and they may come from different namespaces or classes. This increases the likelihood of unintentionally overloading a template name somewhat.
 
 Conversely, it is also imaginable to allow a form of overloading of class templates and variable templates. Here is an example:
 
@@ -9475,9 +7668,9 @@ class Diagnoser {
 \
 int main()
 {
-    `Diagnoser<"Surprise!">().print(); }`
+    `Diagnoser<"Surprise!">().print(); }
 
-However, there are some potential problems. In standard C++, two instances of `Diagnoser` are the same type if and only if they have the same arguments. In this case the argument is a pointer value---in other words, an address. However, two identical string literals appearing in different source locations are not required to have the same address. We could thus find ourselves in the awkward situation that `Diagnoser<"X">` and `Diagnoser<"X">` are in fact two different and incompatible types! (Note that the type of `"X"` is `char const[2]`, but it decays to `char const*` when passed as a template argument.)
+However, there are some potential problems. In standard C++, two instances of `Diagnoser` are the same type if and only if they have the same arguments. In this case the argument is a pointer value---in other words, an address. However, two identical string literals appearing in different source locations are not required to have the same address. We could thus find ourselves in the awkward situation that `Diagnoser<"X">` and `Diagnoser<"X">` are in fact two different and incompatible types! (Note that the type of "X"` is `char const[2]`, but it decays to `char const*` when passed as a template argument.)
 
 Because of these (and related) considerations, the C++ standard prohibits string literals as arguments to templates. However, some implementations do offer the facility as an extension. They enable this by using the actual string literal contents in the internal representation of the template instance. Although this is clearly feasible, some C++ language commentators feel that a nontype template parameter that can be substituted by a string literal value should be declared differently from one that can be substituted by an address. One possibility would be to capture string literals in a parameter pack of characters. For example:
 
@@ -9491,7 +7684,7 @@ class Diagnoser {
 \
 int main()
 {
-    // instantiates `Diagnoser<’S’,’u’,’r’,’p’,’r’,’i’,’s’,’e’,’!’>     Diagnoser<"Surprise!">().print(); }`
+    // instantiates `Diagnoser<’S’,’u’,’r’,’p’,’r’,’i’,’s’,’e’,’!’>     Diagnoser<"Surprise!">().print(); }
 
 We should also note an additional technical wrinkle in this issue. Consider the following template declarations, and let's assume that the language has been extended to accept string literals as template arguments in this case:
 
@@ -9525,7 +7718,7 @@ A related issue is the ability to provide floating-point literals (and simple co
 template<[double] Ratio>
 class Converter {
   public:
-    [static double] convert [(double] val) {
+    [static double] convert (double] val) {
       return val\*Ratio;\
     }
 };
@@ -9584,7 +7777,7 @@ This extension was briefly discussed during the standardization of C++11 but gat
 
 Section [[21.4]] on page [[512]] describes a technique that allows us to provide a nondefault template argument for a specific parameter without having to specify other template arguments for which a default value is available. Although it is an interesting technique, it is also clear that it results in a fair amount of work for a relatively simple effect. Hence, providing a language mechanism to name template arguments is a natural thought.
 
-We should note at this point that a similar extension (sometimes called *keyword arguments*) was proposed earlier in the C++ standardization process by Roland Hartinger (see Section 6.5.1 of [StroustrupDnE]). Although technically sound, the proposal was ultimately not accepted into the language for various reasons. At this point there is no reason to believe named template arguments will ever make it into the language, but the topic arises regularly in committee discussions.
+We should note at this point that a similar extension (sometimes called *keyword arguments*) was proposed earlier in the C++ standardization process by Roland Hartinger (see Section 6.5.1 of [StroustrupDnE). Although technically sound, the proposal was ultimately not accepted into the language for various reasons. At this point there is no reason to believe named template arguments will ever make it into the language, but the topic arises regularly in committee discussions.
 
 However, for the sake of completeness, we mention one syntactic idea that has been discussed:
 
@@ -9598,7 +7791,7 @@ template<typename T,\
          typename Kill = defaultKill<T>>
 class Mutator {
    ...
-`};`\
+};\
 \
 void test(MatrixList ml)
 {
@@ -9624,7 +7817,7 @@ template<typename T,\
          Kill: typename K = defaultKill<T>>
 class Mutator {
    ...
-`};`\
+};\
 \
 void test(MatrixList ml)
 {
@@ -9731,7 +7924,7 @@ We could just decree that `void` is a normal value type with a unique value (lik
 
 [Click here to view code image]
 
-void g[(void]);        // same as [void g();]
+void g(void);        // same as [void g();]
 
 However, in most other ways, `void` would become a complete value type. We could then for example declare `void` variables and references:
 
@@ -9752,7 +7945,7 @@ T max(T a, T b)
   return b < a ? a : b;       
                           // ERROR: "no match for operator [<]\
                           //        (operator types are '`X`' and '`X`')"
-`}`\
+}\
 \
 struct X {
 };
@@ -9785,7 +7978,7 @@ int main()
 {
   `X a, b;`\
   `X m = max(a, b);`        // ERROR: `X` does not meet the `LessThanComparable` requirement
-`}`
+}
 
 By describing the requirements on the template parameter `T`, the compiler is able to ensure that the function template `max()` only uses operations on `T` that the user is expected to provide (in this case, `LessThanComparable` describes the need for `operator<`). Moreover, when using a template, the compiler can check that the supplied template argument provides all of the behavior required for the `max()` function template to work properly. By separating the type-checking problem, it becomes far easier for the compiler to provide an accurate diagnosis of the problem.
 
@@ -9812,9 +8005,9 @@ template<typename T> void report(T p) {
       `-> {`\
           `std::cout << (: std::meta::name(info) :)`\
                     `<<` ":  " << p.(.info.) << '\n';\
-      `}     }   }`\
+      }     }   }`\
   //code will be injected here
-`}`
+}
 
 Quite a few new things are present in this code. First, the `constexpr` construct forces the statements in it to be evaluated at compile time, but if it appears in a template, this evaluation is only done when the template is instantiated. Second, the `reflexpr()` operator produces an expression of opaque type `std::meta::info` that is a handle to reflected information about its argument (the type substituted for `T` in this example). A library of standard metafunctions permits querying this meta-information. One of those standard metafunctions is `std::meta::data_members`, which produces a sequence of `std::meta::info` objects describing the direct nonstatic data members of its operand. So the `for` loop above is really a loop over the nonstatic data members of `p`.
 
@@ -9851,9 +8044,9 @@ Parameter packs were introduced in C++11, but dealing with them often requires r
 template<typename Head, typename... Remainder>
 void f(Head&& h, Remainder&&... r) {
   doSomething(h);
-  [if constexpr] [(sizeof]...(r) != 0) {
+  [if constexpr] (sizeof]...(r) != 0) {
     // handle the remainder recursively (perfectly forwarding the arguments):
-    `f(r…);   } }`
+    `f(r…);   } }
 
 This example is made simpler by exploiting the features of the C++17 compile-time `if` statement (see Section [[8.5]] on page [[134]]), but it remains a recursive instantiation technique that may be somewhat expensive to compile.
 
@@ -9938,7 +8131,7 @@ Note that [Chapter [22]] will discuss some ways to deal with polymorphism after 
 
 Historically, C++ started with supporting polymorphism only through the use of inheritance combined with virtual functions.[2] The art of polymorphic design in this context consists of identifying a common set of capabilities among related object types and declaring them as virtual function interfaces in a common base class.
 
-The poster child for this design approach is an application that manages geometric shapes and allows them to be rendered in some way (e.g., on a screen). In such an application, we might identify an *abstract base class* (ABC) `GeoObj`, which declares the common operations and properties applicable to geometric objects. Each concrete class for specific geometric objects then derives from `GeoObj` (see Figure [[18.1]]):
+The poster child for this design approach is an application that manages geometric shapes and allows them to be rendered in some way (e.g., on a screen). In such an application, we might identify an *abstract base class* (ABC) `GeoObj`, which declares the common operations and properties applicable to geometric objects. Each concrete class for specific geometric objects then derives from `GeoObj` (see Figure [[18.1]):
 
 ![Image](./graphics/f355-01.jpg)
 
@@ -10041,7 +8234,7 @@ results in invocations of different member functions, depending on the dynamic t
 
 ### 18.2 Static Polymorphism 
 
-Templates can also be used to implement polymorphism. However, they don't rely on the factoring of common behavior in base classes. Instead, the commonality is implicit in that the different "shapes" of an application must support operations using common syntax (i.e., the relevant functions must have the same names). Concrete classes are defined independently from each other (see Figure [[18.2]]). The polymorphic power is then enabled when templates are instantiated with the concrete classes.
+Templates can also be used to implement polymorphism. However, they don't rely on the factoring of common behavior in base classes. Instead, the commonality is implicit in that the different "shapes" of an application must support operations using common syntax (i.e., the relevant functions must have the same names). Concrete classes are defined independently from each other (see Figure [[18.2]). The polymorphic power is then enabled when templates are instantiated with the concrete classes.
 
 ![Image](./graphics/f373-01.jpg)
 
@@ -10125,7 +8318,7 @@ Coord distance (GeoObj1 const& x1, GeoObj2 const& x2)
 template<typename GeoObj>
 void drawElems (std::vector<GeoObj> const& elems)
 {
-    [for] [(unsigned] i=0; i<elems.size(); ++i) {
+    [for] (unsigned] i=0; i<elems.size(); ++i) {
         elems[i].draw();  // call [draw()] according to type of element
     }
 }
@@ -10292,9 +8485,9 @@ The availability of static polymorphism in C++ leads to new ways of implementing
 
 *Figure 18.3. Bridge pattern implemented using inheritance*
 
-According to [DesignPatternsGoF], this is usually done using an interface class that embeds a pointer to refer to the actual implementation and delegating all calls through this pointer (see Figure [[18.3]]).
+According to [DesignPatternsGoF], this is usually done using an interface class that embeds a pointer to refer to the actual implementation and delegating all calls through this pointer (see Figure [[18.3]).
 
-However, if the type of the implementation is known at compile time, we exploit the power of templates instead (see Figure [[18.4]]). This leads to more type safety (in part, by avoiding pointer conversions) and better performance.
+However, if the type of the implementation is known at compile time, we exploit the power of templates instead (see Figure [[18.4]). This leads to more type safety (in part, by avoiding pointer conversions) and better performance.
 
 ![Image](./graphics/f379-02.jpg)
 
@@ -10390,7 +8583,7 @@ int main()
 
 By parameterizing its operations in terms of these iterators, the STL avoids an explosion in the number of operation definitions. Instead of implementing each operation for every container, we implement the algorithm once so that it can be used for every container. The *generic glue* is the iterators, which are provided by the containers and used by the algorithms. This works because iterators have a certain interface that is provided by the containers and used by the algorithms. This interface is usually called a *concept*, which denotes a set of constraints that a template has to fulfill to fit into this framework. In addition, this concept is open for additional operations and data structures.
 
-You'll recall that we described a *concepts* language feature earlier in Section [[18.4]] on page [[377]](and in more detail in [Appendix [E]]), and indeed, the language feature maps exactly onto the notion here. In fact, the term *concept* in this context was first introduced by the designers of the STL to formalize their work. Soon thereafter, work commenced to try to make these notions explicit in our templates.
+You'll recall that we described a *concepts* language feature earlier in Section [[18.4]] on page [[377]](and in more detail in [Appendix [E]), and indeed, the language feature maps exactly onto the notion here. In fact, the term *concept* in this context was first introduced by the designers of the STL to formalize their work. Soon thereafter, work commenced to try to make these notions explicit in our templates.
 
 The forthcoming language feature will help us to specify and double check requirements on iterators (since there are different iterator categories, such as *forward* and *bidirectional* iterators, multiple corresponding concepts would be involved; see Section [[E.3.1]] on page [[744]]). In today's C++, however, the concepts are mostly implicit in the specifications of our generic libraries (and the standard C++ library in particular). Some features and techniques (e.g., `static_assert` and SFINAE) do permit some amount of automated checking, fortunately.
 
@@ -10400,7 +8593,7 @@ Generic programming is practical precisely because it relies on static polymorph
 
 ### 18.7 Afternotes 
 
-Container types were a primary motivation for the introduction of templates into the C++ programming language. Prior to templates, polymorphic hierarchies were a popular approach to containers. A popular example was the National Institutes of Health Class Library (NIHCL), which to a large extent translated the container class hierarchy of Smalltalk (see Figure [[18.5]]).
+Container types were a primary motivation for the introduction of templates into the C++ programming language. Prior to templates, polymorphic hierarchies were a popular approach to containers. A popular example was the National Institutes of Health Class Library (NIHCL), which to a large extent translated the container class hierarchy of Smalltalk (see Figure [[18.5]).
 
 ![Image](./graphics/f383-01.jpg)
 
@@ -10459,8 +8652,8 @@ Let's first assume that the values of the sum we want to compute are stored in a
 
 `traits/accum1.hpp`
 
-[#ifndef] ACCUM_HPP\
-[#define] ACCUM_HPP\
+#ifndef ACCUM_HPP\
+#define ACCUM_HPP\
 \
 template<typename T>
 T accum (T const\* beg, T const\* end)
@@ -10473,7 +8666,7 @@ T accum (T const\* beg, T const\* end)
     return total;\
 }
 \
-[#endif] //ACCUM_HPP
+#endif //ACCUM_HPP
 
 The only slightly subtle decision here is how to create a *zero value* of the correct type to start our summation. We use *value initialization* (with the `` notation) here as introduced in Section [[5.2]] on page [[68]]. It means that the local object `total` is initialized either by its default constructor or by zero (which means `nullptr` for pointers and `false` for Boolean values).
 
@@ -10572,8 +8765,8 @@ With this in mind, we can rewrite our `accum()` template as follows:[3]
 
 `traits/accum2.hpp`
 
-[#ifndef] ACCUM_HPP\
-[#define] ACCUM_HPP\
+#ifndef ACCUM_HPP\
+#define ACCUM_HPP\
 \
 #include "accumtraits2.hpp"\
 \
@@ -10591,7 +8784,7 @@ auto accum (T const\* beg, T const\* end)
     return total;\
 }
 \
-[#endif] //ACCUM_HPP
+#endif //ACCUM_HPP
 
 The output of our sample program then becomes what we expect:
 
@@ -10648,8 +8841,8 @@ In this case, our new trait provides an `zero` element as a constant that can be
 
 `traits/accum3.hpp`
 
-[#ifndef] ACCUM_HPP\
-[#define] ACCUM_HPP\
+#ifndef ACCUM_HPP\
+#define ACCUM_HPP\
 \
 #include "accumtraits3.hpp"\
 \
@@ -10667,7 +8860,7 @@ auto accum (T const\* beg, T const\* end)
   return total;\
 }
 \
-[#endif] // ACCUM_HPP
+#endif // ACCUM_HPP
 
 In this code, the initialization of the accumulation variable remains straightforward:
 
@@ -10815,8 +9008,8 @@ We can address this problem by adding a template parameter `AT` for the trait it
 
 `traits/accum5.hpp`
 
-[#ifndef] ACCUM_HPP\
-[#define] ACCUM_HPP\
+#ifndef ACCUM_HPP\
+#define ACCUM_HPP\
 \
 #include "accumtraits4.hpp"\
 \
@@ -10831,7 +9024,7 @@ auto accum (T const\* beg, T const\* end)
     return total;\
 }
 \
-[#endif] //ACCUM_HPP
+#endif //ACCUM_HPP
 
 In this way, many users can omit the extra template argument, but those with more exceptional needs can specify an alternative to the preset accumulation type. Presumably, most users of this template would never have to provide the second template argument explicitly because it can be configured to an appropriate default for every type deduced for the first argument.
 
@@ -10845,8 +9038,8 @@ Here is an example of how we could introduce such a policy in our `accum()` func
 
 `traits/accum6.hpp`
 
-[#ifndef] ACCUM_HPP\
-[#define] ACCUM_HPP\
+#ifndef ACCUM_HPP\
+#define ACCUM_HPP\
 \
 #include "accumtraits4.hpp"\
 #include "sumpolicy1.hpp"\
@@ -10865,7 +9058,7 @@ auto accum (T const\* beg, T const\* end)
     return total;\
 }
 \
-[#endif] //ACCUM_HPP
+#endif //ACCUM_HPP
 
 In this version of `accum() SumPolicy` is a *policy class*, that is, a class that implements one or more policies for an algorithm through an agreed-upon interface.[5] `SumPolicy` could be written as follows:
 
@@ -10873,8 +9066,8 @@ In this version of `accum() SumPolicy` is a *policy class*, that is, a class tha
 
 `traits/sumpolicy1.hpp`
 
-[#ifndef] SUMPOLICY_HPP\
-[#define] SUMPOLICY_HPP\
+#ifndef SUMPOLICY_HPP\
+#define SUMPOLICY_HPP\
 \
 class SumPolicy {
   public:
@@ -10884,7 +9077,7 @@ class SumPolicy {
     }
 };
 \
-[#endif] //SUMPOLICY_HPP
+#endif //SUMPOLICY_HPP
 
 By specifying a different policy to accumulate values, we can compute different things. Consider, for example, the following program, which intends to determine the product of some values:
 
@@ -10928,17 +9121,17 @@ In this case, we may recognize that the initialization of an accumulation loop i
 
 A reasonable case can be made in support of the fact that policies are just a special case of traits. Conversely, it could be claimed that traits just encode a policy.
 
-The *New Shorter Oxford English Dictionary* (see [NewShorterOED]) has this to say:
+The *New Shorter Oxford English Dictionary* (see [NewShorterOED) has this to say:
 
 • **trait** *n... . a distinctive feature characterizing a thing*
 
 • **policy** *n... . any course of action adopted as advantageous or expedient*
 
-Based on this, we tend to limit the use of the term *policy classes* to classes that encode an action of some sort that is largely orthogonal with respect to any other template argument with which it is combined. This is in agreement with Andrei Alexandrescu's statement in his book *Modern C++ Design* (see page 8 of [AlexandrescuDesign]):[6]
+Based on this, we tend to limit the use of the term *policy classes* to classes that encode an action of some sort that is largely orthogonal with respect to any other template argument with which it is combined. This is in agreement with Andrei Alexandrescu's statement in his book *Modern C++ Design* (see page 8 of [AlexandrescuDesign):[6]
 
 *Policies have much in common with traits but differ in that they put less emphasis on type and more on behavior.*
 
-Nathan Myers, who introduced the traits technique, proposed the following more open-ended definition (see [MyersTraits]):
+Nathan Myers, who introduced the traits technique, proposed the following more open-ended definition (see [MyersTraits):
 
 *Traits class: A class used in place of template parameters. As a class, it aggregates useful types and constants; as a template, it provides an avenue for that "extra level of indirection" that solves all software problems.*
 
@@ -10972,7 +9165,7 @@ For policy classes, we make the following observations:
 
 • Policies can be collected in plain classes or in class templates.
 
-However, there is certainly an indistinct line between both terms. For example, the character traits of the C++ standard library also define functional behavior such as comparing, moving, and finding characters. And by replacing these traits, we can define string classes that behave in a case-insensitive manner (see Section 13.2.15 in [JosuttisStdLib]) while keeping the same character type. Thus, although they are called *traits*, they have some properties associated with policies.
+However, there is certainly an indistinct line between both terms. For example, the character traits of the C++ standard library also define functional behavior such as comparing, moving, and finding characters. And by replacing these traits, we can define string classes that behave in a case-insensitive manner (see Section 13.2.15 in [JosuttisStdLib) while keeping the same character type. Thus, although they are called *traits*, they have some properties associated with policies.
 
 #### 19.2.2 Member Templates versus Template Template Parameters 
 
@@ -10982,8 +9175,8 @@ To implement an accumulation policy, we chose to express `SumPolicy` and `MultPo
 
 `traits/sumpolicy2.hpp`
 
-[#ifndef] SUMPOLICY_HPP\
-[#define] SUMPOLICY_HPP\
+#ifndef SUMPOLICY_HPP\
+#define SUMPOLICY_HPP\
 \
 template<typename T1, typename T2>
 class SumPolicy {
@@ -10993,7 +9186,7 @@ class SumPolicy {
     }
 };
 \
-[#endif] //SUMPOLICY_HPP
+#endif //SUMPOLICY_HPP
 
 The interface of `Accum` can then be adapted to use a template template parameter:
 
@@ -11001,8 +9194,8 @@ The interface of `Accum` can then be adapted to use a template template paramete
 
 `traits/accum7.hpp`
 
-[#ifndef] ACCUM_HPP\
-[#define] ACCUM_HPP\
+#ifndef ACCUM_HPP\
+#define ACCUM_HPP\
 \
 #include "accumtraits4.hpp"\
 #include "sumpolicy2.hpp"\
@@ -11022,7 +9215,7 @@ auto accum (T const\* beg, T const\* end)
     return total;\
 }
 \
-[#endif]//ACCUM_HPP
+#endif//ACCUM_HPP
 
 The same transformation can be applied to the traits parameter. (Other variations on this theme are possible: For example, instead of explicitly passing the `AccT` type to the policy type, it may be advantageous to pass the accumulation trait and have the policy determine the type of its result from a traits parameter.)
 
@@ -11046,8 +9239,8 @@ Before we end this introduction to traits and policies, it is instructive to loo
 
 `traits/accum0.hpp`
 
-[#ifndef] ACCUM_HPP\
-[#define] ACCUM_HPP\
+#ifndef ACCUM_HPP\
+#define ACCUM_HPP\
 \
 #include <iterator>
 \
@@ -11064,7 +9257,7 @@ auto accum (Iter start, Iter end)
     return total;\
 }
 \
-[#endif] //ACCUM_HPP
+#endif //ACCUM_HPP
 
 The `std::iterator_traits` structure encapsulates all the relevant properties of iterators. Because a partial specialization for pointers exists, these traits are conveniently used with any ordinary pointer types. Here is how a standard library implementation may implement this support:
 
@@ -11407,7 +9600,7 @@ void f(T)
 }
 \
 template<typename A>
-void printParameterType[(void] (\*)(A))
+void printParameterType(void] (\*)(A))
 \
 {
   std::cout << "Parameter type: " << [typeid](A).name() << '\n';\
@@ -11779,20 +9972,20 @@ struct IsDefaultConstructibleT {
   private:\
     //* test() *trying substitute call of a default constructor for* T *passed as* U *:
     template<typename U, typename = decltype(U())>
-      [static char] test[(void]\*);
+      [static char] test(void]\*);
     //* test() *fallback:
     template<typename>
       [static long] test(...);
   public:
     [static constexpr bool] value\
-      = IsSameT<decltype(test<T>[(nullptr])), [char]>::value;\
+      = IsSameT<decltype(test<T>(nullptr)), [char]>::value;\
 };
 
 The usual approach to implement a SFINAE-base trait with function overloading is to declare two overloaded function templates named `test()` with different return types:
 
 [Click here to view code image]
 
-template<...> [static char] test[(void]\*);
+template<...> [static char] test(void]\*);
 template<...> [static long] test(...);
 
 The first overload is designed to match only if the requested check succeeds (we will discuss below how that is achieved). The second overload is the fallback:[12] It always matches the call, but because it matches "with ellipsis" (i.e., a vararg parameter), any other match would be preferred (see Section [[C.2]] on page [[682]]).
@@ -11830,13 +10023,13 @@ struct IsDefaultConstructibleT {
   private:\
     // ERROR:* test() *uses* T *directly:
     template<typename, typename = decltype(T())>
-      [static char] test[(void]\*);
+      [static char] test(void]\*);
     //* test() *fallback:
     template<typename>
       [static long] test(...);
   public:
     [static constexpr bool] value\
-      = IsSameT<decltype(test<T>[(nullptr])), [char]>::value;\
+      = IsSameT<decltype(test<T>(nullptr)), [char]>::value;\
 };
 
 This doesn't work, however, because for any `T`, always, *all* member functions are substituted, so that for a type that isn't default constructible, the code fails to compile instead of ignoring the first `test()` overload. By passing the class template parameter `T` to a function template parameter `U`, we create a specific SFINAE context only for the second `test()` overload.
@@ -11847,7 +10040,7 @@ SFINAE-based traits have been possible to implement since before the first C++ s
 
 [Click here to view code image]
 
-template<...> [static char] test[(void]\*);
+template<...> [static char] test(void]\*);
 template<...> [static long] test(...);
 
 However, the original published technique[14] used the size of the return type to determine which overload was selected (also using `0` and `enum`, because `nullptr` and `constexpr` were not available):
@@ -11876,7 +10069,7 @@ we could define test `test()` overloads as follows:
 
 [Click here to view code image]
 
-template<...> [static] Size1T test[(void]\*);  // checking* test()]\
+template<...> [static] Size1T test(void]\*);  // checking* test()]\
 template<...> [static] Size2T test(...);    // fallback
 
 Here, we either return a `Size1T`, which is a single `char` of size 1, or we return (a structure of) an array of two `char`s, which has a size of at least 2 on all platforms.
@@ -11887,7 +10080,7 @@ Note also that the type of the call argument passed to `func()` doesn't matter. 
 
 [Click here to view code image]
 
-template<...> [static] Size1T test[(int]);    // checking* test()]\
+template<...> [static] Size1T test(int);    // checking* test()]\
 template<...> [static] Size2T test(...);    // fallback
 ...
 [enum] (test<...>(42)) == 1 };
@@ -11900,14 +10093,14 @@ For this, we need an indirect definition of `IsDefaultConstructibleT`. The trait
 
 [Click here to view code image]
 
-template<...> [static] std::true_type test[(void]\*);    // checking* test()]\
+template<...> [static] std::true_type test(void]\*);    // checking* test()]\
 template<...> [static] std::false_type test(...);     // fallback
 
 That way, the `Type` member for the base class simply can be declared as follows:
 
 [Click here to view code image]
 
-using Type = decltype(test<FROM>[(nullptr]));
+using Type = decltype(test<FROM>(nullptr));
 
 and we no longer need the `IsSameT` trait.
 
@@ -11924,12 +10117,12 @@ struct IsDefaultConstructibleHelper {
   private:\
     //* test() *trying substitute call of a default constructor for* T *passed as* U*:
     template<typename U, typename = decltype(U())>
-      [static] std::true_type test[(void]\*);
+      [static] std::true_type test(void]\*);
     //* test() *fallback:
     template<typename>
       [static] std::false_type test(...);
   public:
-    using Type = decltype(test<T>[(nullptr]));
+    using Type = decltype(test<T>(nullptr));
 };
 \
 template<typename T>
@@ -11982,11 +10175,11 @@ In C++17, the C++ standard library introduced a type trait `std::void_t<>` that 
 
 #include <type_traits>
 \
-[#ifndef] \_\_cpp_lib_void_t\
+#ifndef \_\_cpp_lib_void_t\
 namespace std {
   template<typename...> using void_t = [void];\
 }
-[#endif]
+#endif
 
 Starting with C++14, the C++ standardization committee has recommended that compilers and standard libraries indicate which parts of the standard they have implemented by defining agreed-upon *feature macros*. This is not a `requirement` for standard conformance, but implementers typically follow the recommendation to be helpful to their users.[16] The macro `__cpp_lib_void_t` is the macro recommended to indicate that a library implements `std::void_t`, and thus our code above is made conditional on it.
 
@@ -12008,7 +10201,7 @@ To start with, we introduce a tool constructed from two nested generic lambda ex
 \
 template<typename F, typename... Args,\
          typename = decltype(std::declval<F>()(std::declval<Args&&>()...))>
-std::true_type isValidImpl[(void]\*);
+std::true_type isValidImpl(void]\*);
 \
 // fallback if helper SFINAE'd out:
 template<typename F, typename... Args>
@@ -12016,8 +10209,8 @@ std::false_type isValidImpl(...);
 \
 // define a lambda that takes a lambda* f *and returns whether calling* f *with* args *is valid
 [inline constexpr]\
-auto isValid = [][(auto] f) {
-                 return [][(auto]&&... args) {
+auto isValid = [](auto] f) {
+                 return [](auto]&&... args) {
                           [return decltype](isValidImpl<decltype(f),\
                                                       decltype(args)&&...
                                                      >([nullptr]));
@@ -12045,7 +10238,7 @@ Before delving into the details of that inner lambda expression, let's examine a
 [Click here to view code image]
 
 [constexpr auto] isDefaultConstructible\
-  = isValid([][(auto] x) -> decltype([(void][)decltype](valueT(x))() {
+  = isValid([](auto] x]) -> decltype((void][)decltype](valueT(x))() {
             });
 
 We already know that `isDefaultConstructible` has a lambda closure type and, as the name suggests, it is a function object that checks the trait of a type being default-constructible (we'll see why in what follows). In other words, `isValid` is a *traits factory*: A component that generates traits checking objects from its argument.
@@ -12067,7 +10260,7 @@ To see how all the pieces work together, consider what the inner lambda expressi
   = [](auto&&... args) {
       [return decltype](\
                isValidImpl<\
-                    decltype([](auto x)
+                    decltype([](auto x])
                                 -> decltype(([void])decltype(valueT(x))())),\
                     decltype(args)&&...
                >([nullptr]));
@@ -12098,7 +10291,7 @@ So far, this technique might not seem compelling because both the expressions in
 [Click here to view code image]
 
 [constexpr auto] hasFirst\
-  = isValid([][(auto] x) -> decltype(([void])valueT(x).first) {
+  = isValid([](auto] x]) -> decltype(([void])valueT(x).first) {
             });
 
 #### 19.4.4 SFINAE-Friendly Traits 
@@ -12269,12 +10462,12 @@ struct IsConvertibleHelper {
     [static void] aux(TO);
     template<typename F, typename T,\
              typename = decltype(aux(std::declval<F>()))>
-      [static] std::true_type test[(void]\*);
+      [static] std::true_type test(void]\*);
     //* test() *fallback:
     template<typename, typename>
       [static] std::false_type test(...);
   public:
-    using Type = decltype(test<FROM>[(nullptr]));
+    using Type = decltype(test<FROM>(nullptr));
 };
 \
 template<typename FROM, typename TO>
@@ -12291,10 +10484,10 @@ Here, we use the approach with function overloading, as introduced in Section [[
 
 [Click here to view code image]
 
-template<...> [static] std::true_type test[(void]\*);
+template<...> [static] std::true_type test(void]\*);
 template<...> [static] std::false_type test(...);
 ...
-using Type = decltype(test<FROM>[(nullptr]));
+using Type = decltype(test<FROM>(nullptr));
 ...
 template<typename FROM, typename TO>
 struct IsConvertibleT : IsConvertibleHelper<FROM, TO>::Type {
@@ -12308,7 +10501,7 @@ Again, note that the following doesn't work:
 
 [static void] aux(TO);
 template<typename = decltype(aux(std::declval<FROM>()))>
-  [static char] test[(void]\*);
+  [static char] test(void]\*);
 
 Here, `FROM` and `TO` are completely determined when this member function template is parsed, and therefore a pair of types for which the conversion is not valid (e.g., `double*` and `int*`) will trigger an error right away, before any call to `test()` (and therefore outside any SFINAE context).
 
@@ -12318,7 +10511,7 @@ For that reason, we introduce `F` as a specific member function template paramet
 
 [static void] aux(TO);
 template<typename F, typename = decltype(aux(std::declval<F>()))>
-  [static char] test[(void]\*);
+  [static char] test(void]\*);
 
 and provide the `FROM` type as an explicit template argument in the call to `test()` that appears in the initialization of `value`:
 
@@ -12482,7 +10675,7 @@ The following macro would work:
 
 #include <type_traits>  // for* true_type*,* false_type*, and* void_t]\
 \
-[#define] DEFINE_HAS_TYPE(MemType)                                    \\\
+#define DEFINE_HAS_TYPE(MemType)                                    \\\
   template<typename, typename = std::void_t<>>                      \\\
   struct HasTypeT\_##MemType                                         \\\
    : std::false_type ;                                           \\\
@@ -12526,7 +10719,7 @@ We can modify the trait to also check for data members and (single) member funct
 
 #include <type_traits>  // for* true_type*,* false_type*, and* void_t]\
 \
-[#define] DEFINE_HAS_MEMBER(Member)                                    \\\
+#define DEFINE_HAS_MEMBER(Member)                                    \\\
   template<typename, typename = std::void_t<>>                       \\\
   struct HasMemberT\_##Member                                         \\\
    : std::false_type ;                                            \\\
@@ -12711,14 +10904,14 @@ int main()
 \
   // define to check for data member* first*:
   [constexpr auto] hasFirst\
-    = isValid([][(auto] x) -> decltype(([void])valueT(x).first) {
+    = isValid([](auto] x]) -> decltype(([void])valueT(x).first) {
               });
 \
   cout << "hasFirst: " << hasFirst(type<pair<int,int>>) << '\n'; //* true]\
 \
   // define to check for member type* size_type*:
   [constexpr auto] hasSizeType\
-    = isValid([][(auto] x) -> [typename decltype](valueT(x))::size_type {
+    = isValid([](auto] x]) -> [typename decltype](valueT(x))::size_type {
               });
 \
 struct CX {
@@ -12734,7 +10927,7 @@ cout << "hasSizeType: " << hasSizeType(type<CX>) << '\n';       //* true]\
 \
 // define to check for* <*:
 [constexpr auto] hasLess\
-  = isValid([](auto x, auto y) -> decltype(valueT(x) < valueT(y)) {
+  = isValid([](auto x, auto y]) -> decltype(valueT(x) < valueT(y)) {
             });
 \
 cout << hasLess(42, type<[char]>) << '\n';                 //yields* true]\
@@ -12757,20 +10950,20 @@ To be able to use the common generic syntax, taking types as template parameters
 #include<utility>
 \
 [constexpr auto] hasFirst\
-  = isValid([](auto&& x) -> decltype(([void])&x.first) {
+  = isValid([](auto&& x]) -> decltype(([void])&x.first) {
             });
 template<typename T>
 using HasFirstT = decltype(hasFirst(std::declval<T>()));
 \
 [constexpr auto] hasSizeType\
-  = isValid([](auto&& x)
+  = isValid([](auto&& x])
              -> typename std::decay_t<decltype(x)>::size_type {
             });
 template<typename T>
 using HasSizeTypeT = decltype(hasSizeType(std::declval<T>()));
 \
 [constexpr auto] hasLess\
-= isValid([](auto&& x, auto&& y) -> decltype(x < y) {
+= isValid([](auto&& x, auto&& y]) -> decltype(x < y) {
           });
 \
 template<typename T1, typename T2>
@@ -12821,8 +11014,8 @@ In the previous section, the final definition of the `PlusResultT` trait had a c
 
 `traits/ifthenelse.hpp`
 
-[#ifndef] IFTHENELSE_HPP\
-[#define] IFTHENELSE_HPP\
+#ifndef IFTHENELSE_HPP\
+#define IFTHENELSE_HPP\
 \
 // primary template: yield the second argument by default and rely on
 //                   a partial specialization to yield the third argument
@@ -12840,7 +11033,7 @@ struct IfThenElseT<[false], TrueType, FalseType> {
 \
 template<[bool] COND, typename TrueType, typename FalseType>
 using IfThenElse = typename IfThenElseT<COND, TrueType, FalseType>::Type;\
-[#endif] //IFTHENELSE_HPP
+#endif //IFTHENELSE_HPP
 
 The following example demonstrates an application of this template by defining a type function that determines the lowest-ranked integer type for a given value:
 
@@ -13176,7 +11369,7 @@ struct IsFundaT : std::false_type {
 };
 \
 // macro to specialize for fundamental types
-[#define] MK_FUNDA_TYPE(T)                             \\\
+#define MK_FUNDA_TYPE(T)                             \\\
    template<> struct IsFundaT<T> : std::true_type {  \\\
    };
 \
@@ -13426,7 +11619,7 @@ struct IsFunctionT<R (Params..., ...)> : std::true_type \
     [static constexpr bool] variadic = [true];\
 };
 
-Note that each part of the function type is exposed: Type provides the result type, while all of the parameters are captured in a single *typelist* as ParamsT (typelists are covered in [Chapter [24]]), and variadic indicates whether the function type uses C-style varargs.
+Note that each part of the function type is exposed: Type provides the result type, while all of the parameters are captured in a single *typelist* as ParamsT (typelists are covered in [Chapter [24]), and variadic indicates whether the function type uses C-style varargs.
 
 Unfortunately, this formulation of `IsFunctionT` does not handle all function types, because function types can have `const` and `volatile` qualifiers as well as lvalue (`&`) and rvalue (`&&`) reference qualifiers (described in Section [[C.2.1]] on page [[684]]) and, since C++17, `noexcept` qualifiers. For example:
 
@@ -13551,7 +11744,7 @@ As hinted at earlier, this problem is conveniently handled using a policy traits
 
 template<typename T>
 struct RParam {
-    using Type = typename IfThenElseT<[sizeof](T)<=2[\*sizeof][(void]\*),\
+    using Type = typename IfThenElseT<[sizeof](T)<=2[\*sizeof](void]\*),\
                                       T,\
                                       T const&>::Type;\
 };
@@ -13571,8 +11764,8 @@ Because such types are common in C++, it may be safer to mark only small types w
 
 `traits/rparam.hpp`
 
-[#ifndef] RPARAM_HPP\
-[#define] RPARAM_HPP\
+#ifndef RPARAM_HPP\
+#define RPARAM_HPP\
 \
 #include "ifthenelse.hpp"\
 #include <type_traits>
@@ -13580,13 +11773,13 @@ Because such types are common in C++, it may be safer to mark only small types w
 template<typename T>
 struct RParam {
   using Type\
-    = IfThenElse<[(sizeof](T) <= 2[\*sizeof]([void]\*)
+    = IfThenElse<(sizeof](T) <= 2[\*sizeof]([void]\*])
                    && std::is_trivially_copy_constructible<T>::value\
                    && std::is_trivially_move_constructible<T>::value),\
                  T,\
                  T const&>;\
 };
-[#endif] //RPARAM_HPP
+#endif //RPARAM_HPP
 
 Either way, the policy can now be centralized in the traits template definition, and clients can exploit it to good effect. For example, let's suppose we have two classes, with one class specifying that calling by value is better for read-only arguments:
 
@@ -13707,15 +11900,15 @@ Traits can be used as a form of *reflection*, in which a program inspects its ow
 
 The idea of storing properties of types as members of template specializations dates back to at least the mid-1990s. Among the earlier serious applications of type classification templates was the `__type_traits` utility in the STL implementation distributed by SGI (then known as *Silicon Graphics*). The SGI template was meant to represent some properties of its template argument (e.g., whether it was a *plain old datatype* (POD) or whether its destructor was trivial). This information was then used to optimize certain STL algorithms for the given type. An interesting feature of the SGI solution was that some SGI compilers recognized the `__type_traits` specializations and provided information about the arguments that could not be derived using standard techniques. (The generic implementation of the `__type_traits` template was safe to use, albeit suboptimal.)
 
-Boost provides a rather complete set of type classification templates (see [BoostTypeTraits]) that formed the basis of the `<type_traits>` header in the 2011 C++ standard library. While many of these traits can be implemented with the techniques described in this chapter, others (such as `std::is_pod`, for detecting PODs) require compiler support, much like the `__type_traits` specializations provided by the SGI compilers.
+Boost provides a rather complete set of type classification templates (see [BoostTypeTraits) that formed the basis of the `<type_traits>` header in the 2011 C++ standard library. While many of these traits can be implemented with the techniques described in this chapter, others (such as `std::is_pod`, for detecting PODs) require compiler support, much like the `__type_traits` specializations provided by the SGI compilers.
 
-The use of the SFINAE principle for type classification purposes had been noted when the type deduction and substitution rules were clarified during the first standardization effort. However, it was never formally documented, and as a result, much effort was later spent trying to re-create some of the techniques described in this chapter. The first edition of this book was one of the earliest sources for this technique, and it introduced the term *SFINAE*. One of the other notable early contributors in this area was Andrei Alexandrescu, who made popular the use of the `sizeof` operator to determine the outcome of overload resolution. This technique became popular enough that the 2011 standard extended the reach of SFINAE from simple type errors to arbitrary errors within the immediate context of the function template (see [SpicerSFINAE]). This extension, in combination with the addition of `decltype`, rvalue references, and variadic templates, greatly expanded the ability to test for specific properties within traits.
+The use of the SFINAE principle for type classification purposes had been noted when the type deduction and substitution rules were clarified during the first standardization effort. However, it was never formally documented, and as a result, much effort was later spent trying to re-create some of the techniques described in this chapter. The first edition of this book was one of the earliest sources for this technique, and it introduced the term *SFINAE*. One of the other notable early contributors in this area was Andrei Alexandrescu, who made popular the use of the `sizeof` operator to determine the outcome of overload resolution. This technique became popular enough that the 2011 standard extended the reach of SFINAE from simple type errors to arbitrary errors within the immediate context of the function template (see [SpicerSFINAE). This extension, in combination with the addition of `decltype`, rvalue references, and variadic templates, greatly expanded the ability to test for specific properties within traits.
 
-Using generic lambdas like `isValid` to extract the essence of a SFINAE condition is a technique introduced by Louis Dionne in 2015, which is used by Boost.Hana (see [BoostHana]), a metaprogramming library suited for compile-time computations on both types and values.
+Using generic lambdas like `isValid` to extract the essence of a SFINAE condition is a technique introduced by Louis Dionne in 2015, which is used by Boost.Hana (see [BoostHana), a metaprogramming library suited for compile-time computations on both types and values.
 
-Policy classes have apparently been developed by many programmers and a few authors. Andrei Alexandrescu made the term *policy classes* popular, and his book *Modern C++ Design* covers them in more detail than our brief section (see [AlexandrescuDesign]).
+Policy classes have apparently been developed by many programmers and a few authors. Andrei Alexandrescu made the term *policy classes* popular, and his book *Modern C++ Design* covers them in more detail than our brief section (see [AlexandrescuDesign).
 
-^[1]^ Most examples in this section use ordinary pointers for the sake of simplicity. Clearly, an industrial-strength interface may prefer to use iterator parameters following the conventions of the C++ standard library (see [JosuttisStdLib]). We revisit this aspect of our example later.
+^[1]^ Most examples in this section use ordinary pointers for the sake of simplicity. Clearly, an industrial-strength interface may prefer to use iterator parameters following the conventions of the C++ standard library (see [JosuttisStdLib). We revisit this aspect of our example later.
 
 ^[2]^ EBCDIC is an abbreviation of Extended Binary-Coded Decimal Interchange Code, which is an IBM character set that is widely used on large IBM computers.
 
@@ -13785,8 +11978,8 @@ Policy classes have apparently been developed by many programmers and a few auth
 
 Function overloading allows the same function name to be used for multiple functions, so long as those functions are distinguished by their parameter types. For example:
 
-void f [(int]);
-void f [(char const]\*);
+void f (int);
+void f (char const]\*);
 
 With function templates, one overloads on type patterns such as pointer-to-`T` or `Array<T>`:
 
@@ -13795,7 +11988,7 @@ With function templates, one overloads on type patterns such as pointer-to-`T` o
 template<typename T> void f(T*);
 template<typename T> void f(Array<T>);
 
-Given the prevalence of type traits (discussed in [Chapter [19]]), it is natural to want to overload function templates based on the properties of the template arguments. For example:
+Given the prevalence of type traits (discussed in [Chapter [19]), it is natural to want to overload function templates based on the properties of the template arguments. For example:
 
 [Click here to view code image]
 
@@ -13954,7 +12147,7 @@ struct EnableIfT[<true], T> {
 template<[bool] Cond, typename T = [void]>
 using EnableIf = typename EnableIfT<Cond, T>::Type;
 
-`EnableIf` expands to a type and is therefore implemented as an alias template. We want to use partial specialization (see [Chapter [16]]) for its implementation, but alias templates cannot be partially specialized. Fortunately, we can introduce a helper class template `EnableIfT`, which does the actual work we need, and have the alias template `EnableIf` simply select the result type from the helper template. When the condition is `true`, `EnableIfT<…>::Type` (and therefore `EnableIf<…>`) simply evaluates to the second template argument, `T`. When the condition is `false`, `EnableIf` does not produce a valid type, because the primary class template for `EnableIfT` has no member named `Type`. Normally, this would be an error, but in a SFINAE (substitution failure is not an error, described in Section [[15.7]] on page [[284]]) context---such as the return type of a function template---it has the effect of causing template argument deduction to fail, removing the function template from consideration.[3]
+`EnableIf` expands to a type and is therefore implemented as an alias template. We want to use partial specialization (see [Chapter [16]) for its implementation, but alias templates cannot be partially specialized. Fortunately, we can introduce a helper class template `EnableIfT`, which does the actual work we need, and have the alias template `EnableIf` simply select the result type from the helper template. When the condition is `true`, `EnableIfT<…>::Type` (and therefore `EnableIf<…>`) simply evaluates to the second template argument, `T`. When the condition is `false`, `EnableIf` does not produce a valid type, because the primary class template for `EnableIfT` has no member named `Type`. Normally, this would be an error, but in a SFINAE (substitution failure is not an error, described in Section [[15.7]] on page [[284]]) context---such as the return type of a function template---it has the effect of causing template argument deduction to fail, removing the function template from consideration.[3]
 
 For `advanceIter()`, the use of `EnableIf` means that the function template will be available (and have a return type of `void`) when the `Iterator` argument is a random access iterator, and will be removed from consideration when the `Iterator` argument is not a random access iterator. We can think of `EnableIf` as a way to "guard" templates against instantiation with template arguments that don't meet the requirements of the template implementation, because this `advanceIter()` can only be instantiated with a random access iterator as it requires operations only available on a random access iterator. While using `EnableIf` in this manner is not bulletproof---the user could assert that a type is a random access iterator without providing the necessary operations---it can help diagnose common mistakes earlier.
 
@@ -14228,7 +12421,7 @@ public:
 \
 {
   // search for the element with this key:
-  [for] [(auto]& element : data) {
+  [for] (auto]& element : data) {
     if (element.first == key){
       return element.second;\
     }
@@ -14253,7 +12446,7 @@ template<typename Key, typename Value, typename = [void]>
 class Dictionary\
 {
   ...     //vector implementation as above
-`};`
+};
 
 This new template parameter serves as an anchor for `EnableIf`, which now can be embedded in the template argument list of the partial specialization for the `map` version of the `Dictionary`:
 
@@ -14308,7 +12501,7 @@ Tag dispatching, too, can be used to select among class template partial special
 
 [Click here to view code image]
 
-*[// primary template (intentionally undefined):]*\
+// primary template (intentionally undefined):]*\
 template<typename Iterator,\
                typename Tag =\
                       BestMatchInSet<\
@@ -14319,7 +12512,7 @@ template<typename Iterator,\
                              std::random_access_iterator_tag>>
 class Advance;\
 \
-*[// general, linear-time implementation for input iterators:]*\
+// general, linear-time implementation for input iterators:]*\
 template<typename Iterator>
 class Advance<Iterator, std::input_iterator_tag>
 {
@@ -14336,7 +12529,7 @@ class Advance<Iterator, std::input_iterator_tag>
    }
 };
 \
-*[// bidirectional, linear-time algorithm for bidirectional iterators:]*\
+// bidirectional, linear-time algorithm for bidirectional iterators:]*\
 template<typename Iterator>
 class Advance<Iterator, std::bidirectional_iterator_tag>
 {
@@ -14359,7 +12552,7 @@ class Advance<Iterator, std::bidirectional_iterator_tag>
   }
  };
 \
-*[// bidirectional, constant-time algorithm for random access iterators:]*\
+// bidirectional, constant-time algorithm for random access iterators:]*\
 template<typename Iterator>
 class Advance<Iterator, std::random_access_iterator_tag>
 {
@@ -14437,8 +12630,8 @@ This template requires the type `T` to have a `<` operator able to compare two `
 
 *typeoverload/lessresult.hpp*
 
-#include <utility>         *[// for]* declval()
-#include <type_traits>     *[// for]* true_type *[and]* false_type\
+#include <utility>         // for]* declval()
+#include <type_traits>     // for]* true_type *[and]* false_type\
 \
 template<typename T1, typename T2>
 class HasLess {
@@ -14448,7 +12641,7 @@ class HasLess {
   template<typename U1, typename U2> [static] std::false_type\
     test(...);
  public:
-  [static constexpr bool] value = decltype(test<T1, T2>[(nullptr]))::value;\
+  [static constexpr bool] value = decltype(test<T1, T2>(nullptr))::value;\
 };
 \
 template<typename T1, typename T2, [bool] HasLess>
@@ -14509,7 +12702,7 @@ struct X3 ;\
 struct X4 ;\
 \
 struct BoolConvertible {
-  [operator bool]() const ; }       *[// implicit conversion to]* bool\
+  [operator bool]() const ; }       // implicit conversion to]* bool\
 };
 struct X5 ;\
 BoolConvertible [operator]< (X5 const&, X5 const&)
@@ -14526,20 +12719,20 @@ return NotBoolConvertible();
 }
 \
 struct BoolLike {
-  [explicit operator bool]() const ; } *[// explicit conversion to]* bool\
+  [explicit operator bool]() const ; } // explicit conversion to]* bool\
 };
 struct X7 ;\
 BoolLike [operator]< (X7 const&, X7 const&)  BoolLike(); }
 \
 int main()
 {
-  min(X1(), X1()); *[//]* X1 *[can be passed to]* min()
-  min(X2(), X2()); *[//]* X2 *[can be passed to]* min()
-  min(X3(), X3()); *[// ERROR:]* X3 *[cannot be passed to]* min()
-  min(X4(), X4()); *[// ERROR:]* X4 *[can be passed to]* min()
-  min(X5(), X5()); *[//]* X5 *[can be passed to]* min()
-  min(X6(), X6()); *[// ERROR:]* X6 *[cannot be passed to]* min()
-  min(X7(), X7()); *[// UNEXPECTED ERROR:]* X7 *[cannot be passed to]* min()
+  min(X1(), X1()); //]* X1 *[can be passed to]* min()
+  min(X2(), X2()); //]* X2 *[can be passed to]* min()
+  min(X3(), X3()); // ERROR:]* X3 *[cannot be passed to]* min()
+  min(X4(), X4()); // ERROR:]* X4 *[can be passed to]* min()
+  min(X5(), X5()); //]* X5 *[can be passed to]* min()
+  min(X6(), X6()); // ERROR:]* X6 *[cannot be passed to]* min()
+  min(X7(), X7()); // UNEXPECTED ERROR:]* X7 *[cannot be passed to]* min()
 }
 
 When compiling this program, notice that while there are errors for four of the different `min()` calls---for `X3`, `X4`, `X6`, and `X7`---the errors do not come from the body of `min()`, as they would have with the non-instantiation-safe variant. Rather, they complain that there is no suitable `min()` function, because the only option has been eliminated by SFINAE. Clang produces the following diagnostic:
@@ -14567,8 +12760,8 @@ To fix the instantiation-safe `min()`, we need a trait to determine whether a ty
 
 *typeoverload/iscontextualbool.hpp*
 
-#include <utility>        *[// for]* declval()
-#include <type_traits>   *[// for]* true_type *[and]* false_type\
+#include <utility>        // for]* declval()
+#include <type_traits>   // for]* true_type *[and]* false_type\
 \
 template<typename T>
 class IsContextualBoolT {
@@ -14579,7 +12772,7 @@ class IsContextualBoolT {
   template<typename U> [static] std::false_type\
     test(...);
  public:
-  [static constexpr bool] value = decltype(test<T>[(nullptr]))::value;\
+  [static constexpr bool] value = decltype(test<T>(nullptr))::value;\
 };
 \
 template<typename T>
@@ -14623,15 +12816,15 @@ template<typename InputIterator>
 vector(InputIterator first, InputIterator second,\
         allocator_type const& alloc = allocator_type());
 
-with the requirement that "if the constructor is called with a type `InputIterator` that does not qualify as an input iterator, then the constructor shall not participate in overload resolution" (see *§*23.2.3 paragraph 14 of [C++11]). This phrasing is vague enough to allow the most efficient techniques of the day to be used for the implementation, but at the time it was added to the standard, the use of `std::enable_if<>` was envisioned.
+with the requirement that "if the constructor is called with a type `InputIterator` that does not qualify as an input iterator, then the constructor shall not participate in overload resolution" (see *§*23.2.3 paragraph 14 of [C++11). This phrasing is vague enough to allow the most efficient techniques of the day to be used for the implementation, but at the time it was added to the standard, the use of `std::enable_if<>` was envisioned.
 
 ### 20.7 Afternotes 
 
-Tag dispatching has been known in C++ for a long time. It was used in the original implementation of the STL (see [StepanovLeeSTL]), and is often used alongside traits. The use of SFINAE and `EnableIf` is much newer: The first edition of this book (see [VandevoordeJosuttisTemplates1st]) introduced the term SFINAE and demonstrated its use for detecting the presence of member types (for example).
+Tag dispatching has been known in C++ for a long time. It was used in the original implementation of the STL (see [StepanovLeeSTL), and is often used alongside traits. The use of SFINAE and `EnableIf` is much newer: The first edition of this book (see [VandevoordeJosuttisTemplates1st) introduced the term SFINAE and demonstrated its use for detecting the presence of member types (for example).
 
 The "enable if" technique and terminology was first published by Jaakko J¨arvi, Jeremiah Will-cock, Howard Hinnant, and Andrew Lumsdaine in [OverloadingProperties], which describes the `EnableIf` template, how to implement function overloading with `EnableIf` (and `DisableIf`) pairs, and how to use `EnableIf` with class template partial specializations. Since then, `EnableIf` and similar techniques have become ubiquitous in the implementation of advanced template libraries, including the C++ standard library. Moreover, the popularity of these techniques motivated the extended SFINAE behavior in C++11 (see Section [[15.7]] on page [[284]]). Peter Dimov was the first to note that default template arguments for function templates (another C++11 feature) made it possible to use `EnableIf` in constructor templates without introducing another function parameter.
 
-The *concepts* language feature (described in [Appendix [E]]) is expected in the next C++ standard after C++17. It is expected to make many techniques involving `EnableIf` largely obsolete. Meanwhile, C++17's *constexpr if* statements (see Section [[8.5]] on page [[134]] and Section [[20.3.3]] on page [[474]]) is also gradually eroding their pervasive presence in modern template libraries.
+The *concepts* language feature (described in [Appendix [E]) is expected in the next C++ standard after C++17. It is expected to make many techniques involving `EnableIf` largely obsolete. Meanwhile, C++17's *constexpr if* statements (see Section [[8.5]] on page [[134]] and Section [[20.3.3]] on page [[474]]) is also gradually eroding their pervasive presence in modern template libraries.
 
 ^[1]^ An better option for `swap()`, specifically, is to use `std::move()` to avoid copies in the primary template.
 
@@ -14641,13 +12834,13 @@ The *concepts* language feature (described in [Appendix [E]]) is expected in the
 
 ^[4]^ Usually, algorithm specialization is used only to provide efficiency gains, either in computation time or resource usage. However, some specializations of algorithms also provide more functionality, such as (in this case) the ability to move backward in a sequence.
 
-^[5]^ While a conversion function template does have a return type---the type it is converting to---the template parameters in that type need to be deducible (see [Chapter [15]]) for the conversion function template to behave properly.
+^[5]^ While a conversion function template does have a return type---the type it is converting to---the template parameters in that type need to be deducible (see [Chapter [15]) for the conversion function template to behave properly.
 
 ^[6]^ In C++17, one can eliminate the recursion with pack expansions in the base class list and in a using declaration (Section [[4.4.5]] on page [[65]]). We demonstrate this technique in Section [[26.4]] on page [[611]].
 
 ^[7]^ It would be slightly better to provide no result in the case of failure, to make this a SFINAE-friendly trait (see Section [[19.4.4]] on page [[424]]). Moreover, a robust implementation would wrap the return type in something like `Identity`, because there are some types---such as array and function types---that can be parameter types but not return types. We omit these improvements for the sake of brevity and readability.
 
-^[8]^ C++11 introduced the notion of contextual conversion to `bool` along with explicit conversion operators. Together, they replace uses of the "safe `bool`" idiom ([KarlssonSafeBool]), which typically involves an (implicit) user-defined conversion to a pointer-to-data member. The pointer-to-data member is used because it can be treated as a `bool` value but doesn't have other, unwanted conversions, such as `bool` being promoted to `int` as part of arithmetic operations. For example, `BoolConvertible() + 5` is (unfortunately) well-formed code.
+^[8]^ C++11 introduced the notion of contextual conversion to `bool` along with explicit conversion operators. Together, they replace uses of the "safe `bool" idiom ([KarlssonSafeBool]), which typically involves an (implicit) user-defined conversion to a pointer-to-data member. The pointer-to-data member is used because it can be treated as a `bool` value but doesn't have other, unwanted conversions, such as `bool` being promoted to `int` as part of arithmetic operations. For example, `BoolConvertible() + 5` is (unfortunately) well-formed code.
 
 
 
@@ -14716,7 +12909,7 @@ int main()
   std::cout << "sizeof(EmptyThree):  " << [sizeof](EmptyThree) << '\n';\
 }
 
-If your compiler implements the EBCO, it will print the same size for every class, but none of these classes has size zero (see Figure [[21.1]]). This means that within class `EmptyToo`, the class `Empty` is not given any space. Note also that an empty class with optimized empty bases (and no other bases) is also empty. This explains why class `EmptyThree` can also have the same size as class `Empty`. If your compiler does not implement the EBCO, it will print different sizes (see Figure [[21.2]]).
+If your compiler implements the EBCO, it will print the same size for every class, but none of these classes has size zero (see Figure [[21.1]). This means that within class `EmptyToo`, the class `Empty` is not given any space. Note also that an empty class with optimized empty bases (and no other bases) is also empty. This explains why class `EmptyThree` can also have the same size as class `Empty`. If your compiler does not implement the EBCO, it will print different sizes (see Figure [[21.2]).
 
 [Click here to view code image]
 
@@ -14735,7 +12928,7 @@ Consider an example that runs into a constraint of the EBCO:
 #include <iostream>!\
 \
 class Empty {
-  using Int = int;    *[// type alias members don't make a class nonempty]*\
+  using Int = int;    // type alias members don't make a class nonempty]*\
 };
 \
 class EmptyToo : [public] Empty {
@@ -14751,7 +12944,7 @@ int main()
   std::cout <<"sizeof(NonEmpty): " << [sizeof](NonEmpty) <<'\n';\
 }
 
-It may come as a surprise that class `NonEmpty` is not an empty class. After all, it does not have any members and neither do its base classes. However, the base classes `Empty` and `EmptyToo` of `NonEmpty` cannot be allocated to the same address because this would cause the base class `Empty` of `EmptyToo` to end up at the same address as the base class `Empty` of class `NonEmpty`. In other words, two subobjects of the same type would end up at the same offset, and this is not permitted by the object layout rules of C++. It may be conceivable to decide that one of the `Empty` base subobjects is placed at offset "0 bytes" and the other at offset "1 byte," but the complete `NonEmpty` object still cannot have a size of 1 byte because in an array of two `NonEmpty` objects, an `Empty` subobject of the first element cannot end up at the same address as an `Empty` subobject of the second element (see Figure [[21.3]]).
+It may come as a surprise that class `NonEmpty` is not an empty class. After all, it does not have any members and neither do its base classes. However, the base classes `Empty` and `EmptyToo` of `NonEmpty` cannot be allocated to the same address because this would cause the base class `Empty` of `EmptyToo` to end up at the same address as the base class `Empty` of class `NonEmpty`. In other words, two subobjects of the same type would end up at the same offset, and this is not permitted by the object layout rules of C++. It may be conceivable to decide that one of the `Empty` base subobjects is placed at offset "0 bytes" and the other at offset "1 byte," but the complete `NonEmpty` object still cannot have a size of 1 byte because in an array of two `NonEmpty` objects, an `Empty` subobject of the first element cannot end up at the same address as an `Empty` subobject of the second element (see Figure [[21.3]).
 
 [Click here to view code image]
 
@@ -14830,20 +13023,20 @@ The implementation of `BaseMemberPair` can be fairly compact:
 
 `inherit/basememberpair.hpp`
 
-[#ifndef] BASE_MEMBER_PAIR_HPP\
-[#define] BASE_MEMBER_PAIR_HPP\
+#ifndef BASE_MEMBER_PAIR_HPP\
+#define BASE_MEMBER_PAIR_HPP\
 \
 template<typename Base, typename Member>
 class BaseMemberPair : private Base {
   private:\
     Member mem;\
   public:
-    *[// constructor]*\
+    // constructor]*\
     BaseMemberPair (Base const & b, Member const & m)
      : Base(b), mem(m) {
     }
 \
-    *[// access base class data via]* first()
+    // access base class data via]* first()
     Base const& base() const {
         [return static_cast]<Base const&>([\*this]);
     }
@@ -14851,7 +13044,7 @@ class BaseMemberPair : private Base {
         [return static_cast]<Base&>([\*this]);
     }
 \
-    *[// access member data via]* second()
+    // access member data via]* second()
     Member const& member() const {
         [return this]->mem;\
     }
@@ -14861,7 +13054,7 @@ class BaseMemberPair : private Base {
 \
 };
 \
-[#endif] *[// BASE]\_[MEMBER]\_[PAIR]\_[HPP]*
+#endif // BASE]\_[MEMBER]\_[PAIR]\_[HPP]*
 
 An implementation needs to use the member functions `base()` and `member()` to access the encapsulated (and possibly storage-optimized) data members.
 
@@ -14913,28 +13106,28 @@ class ObjectCounter {
    [inline static] std::size_t count = 0;     *// number of existing objects*\
 \
 [protected]:\
-  *[// default constructor]*\
+  // default constructor]*\
   ObjectCounter() {
       ++count;\
   }
 \
-  *[// copy constructor]*\
+  // copy constructor]*\
   ObjectCounter (ObjectCounter<CountedType> const&) {
       ++count;\
   }
 \
-  *[// move constructor]*\
+  // move constructor]*\
   ObjectCounter (ObjectCounter<CountedType> &&) {
       ++count;\
   }
 \
-  *[// destructor]*\
+  // destructor]*\
   \~ObjectCounter() {
       \--count;\
   }
 \
 public:
-  *[// return number of existing objects:]*\
+  // return number of existing objects:]*\
   [static] std::size_t live() {
       return count;\
   }
@@ -14951,7 +13144,7 @@ class ObjectCounter {
   *...*\
 };
 \
-*[// initialize counter with zero:]*\
+// initialize counter with zero:]*\
 template<typename CountedType>
 std::size_t ObjectCounter<CountedType>::count = 0;
 
@@ -14981,7 +13174,7 @@ int main()
 
 #### 21.2.1 The Barton-Nackman Trick 
 
-In 1994, John J. Barton and Lee R. Nackman presented a template technique that they called *restricted template expansion* (see [BartonNackman]). The technique was motivated in part by the fact that---at the time---function template overloading was severely limited[1] and namespaces were not available in most compilers.
+In 1994, John J. Barton and Lee R. Nackman presented a template technique that they called *restricted template expansion* (see [BartonNackman). The technique was motivated in part by the fact that---at the time---function template overloading was severely limited[1] and namespaces were not available in most compilers.
 
 To illustrate this, suppose we have a class template `Array` for which we want to define the equality operator `==`. One possibility is to declare the operator as a member of the class template, but this is not good practice because the first argument (binding to the `this` pointer) is subject to conversion rules that differ from the second argument. Because operator `==` is meant to be symmetrical with respect to its arguments, it is preferable to declare it as a namespace scope function. An outline of a natural approach to its implementation may look like the following:
 
@@ -15139,13 +13332,13 @@ class IteratorFacade\
    reference [operator] \*() const \
    pointer [operator] ->() const \
    Derived& [operator] ++() \
-   Derived [operator] ++[(int]) \
+   Derived [operator] ++(int) \
    [friend bool operator]== (IteratorFacade const& lhs,\
                            IteratorFacade const& rhs) \
    ...
    // bidirectional iterator interface:
    Derived& [operator] \--() \
-   Derived [operator] \--[(int]) \
+   Derived [operator] \--(int) \
 \
    // random access iterator interface:
    reference [operator] [](difference_type n) const \
@@ -15182,9 +13375,9 @@ The role of the facade is to adapt a type that implements only those core operat
 
 [Click here to view code image]
 
-Derived& asDerived()  [\*static_cast]<Derived\*>[(this]); }
+Derived& asDerived()  [\*static_cast]<Derived\*>(this); }
 Derived const& asDerived() const {
- return [\*static_cast]<Derived const\*>[(this]);
+ return [\*static_cast]<Derived const\*>(this);
 }
 
 Given that definition, the implementation of much of the facade is straightforward.[3] We only illustrate the definitions for some of the input iterator requirements; the others follow similarly.
@@ -15198,7 +13391,7 @@ Derived& [operator]++() {
   asDerived().increment();
   return asDerived();
 }
-Derived [operator]++[(int]) {
+Derived [operator]++(int) {
   Derived result(asDerived());
   asDerived().increment();
   return result;\
@@ -15247,7 +13440,7 @@ class ListNodeIterator\
   [bool] equals(ListNodeIterator const& other) const {
     return current == other.current;\
   }
-  ListNodeIterator(ListNode<T>\* current = [nullptr]) : current(current) \
+  ListNodeIterator(ListNode<T>\* current = [nullptr) : current(current) \
 };
 
 `ListNodeIterator` provides all of the correct operators and nested types needed to act as a forward iterator, and requires very little code to implement. As we will see later, defining more complicated iterators (e.g., random access iterators) requires only a small amount of extra work.
@@ -15415,7 +13608,7 @@ class Point\
   public:
     [double] x, y;\
     Point() : x(0.0), y(0.0) \
-    Point([double] x, [double] y) : x(x), y(y) \
+    Point([double] x, [double] y]) : x(x), y(y) \
 };
 \
 class Polygon\
@@ -15448,7 +13641,7 @@ class LabeledPoint : [public] Point\
   public:
     std::string label;\
     LabeledPoint() : Point(), label("") \
-    LabeledPoint([double] x, [double] y) : Point(x, y), label("") \
+    LabeledPoint([double] x, [double] y]) : Point(x, y), label("") \
 };
 
 This implementation has its shortcomings. For one, it requires that the type `Point` be exposed to the user so that the user can derive from it. Also, the author of `LabeledPoint` needs to be careful to provide exactly the same interface as `Point` (e.g., inheriting or providing all of the same constructors as `Point`), or `LabeledPoint` will not work with `Polygon`. This constraint becomes more problematic if `Point` changes from one version of the `Polygon` template to another: The addition of a new `Point` constructor could require each derived class to be updated.
@@ -15465,7 +13658,7 @@ class Point : [public] Mixins...
   public:
     [double] x, y;\
     Point() : Mixins()..., x(0.0), y(0.0) \
-    Point([double] x, [double] y) : Mixins()..., x(x), y(y) \
+    Point([double] x, [double] y]) : Mixins()..., x(x), y(y) \
 };
 
 Now, we can "mix in" a base class containing a label to produce a `LabeledPoint`:
@@ -15520,7 +13713,7 @@ class Point : [public] Mixins<Point>...
   public:
     [double] x, y;\
     Point() : Mixins<Point>()..., x(0.0), y(0.0) \
-    Point([double] x, [double] y) : Mixins<Point>()..., x(x), y(y) \
+    Point([double] x, [double] y]) : Mixins<Point>()..., x(x), y(y) \
 };
 
 This formulation requires some more work for each class that will be mixed in, so classes such as `Label` and `Color` will need to become class templates. However, the mixed-in classes can now tailor their behavior to the specific instance of the derived class they've been mixed into. For example, we can mix the previously discussed `ObjectCounter` template into `Point` to count the number of points created by `Polygon` and compose that mixin with other application-specific mixins as well.
@@ -15691,7 +13884,7 @@ PolicySelector<Policy3_is<CustomPolicy>,\
                DefaultPolicyArgs,\
                DefaultPolicyArgs>
 
-With the help of the `Discriminator<>` class templates, this results in a hierarchy in which all template arguments are base classes (see Figure [[21.4]]). The important point is that these base classes
+With the help of the `Discriminator<>` class templates, this results in a hierarchy in which all template arguments are base classes (see Figure [[21.4]). The important point is that these base classes
 
 [Click here to view code image]
 
@@ -15721,7 +13914,7 @@ We developed the technique for four template type parameters, but it obviously s
 
 Bill Gibbons was the main sponsor behind the introduction of the EBCO into the C++ programming language. Nathan Myers made it popular and proposed a template similar to our `BaseMemberPair` to take better advantage of it. The Boost library contains a considerably more sophisticated template, called `compressed_pair`, that resolves some of the problems we reported for the `MyClass` template in this chapter. `boost::compressed_pair` can also be used instead of our `BaseMemberPair`.
 
-CRTP has been in use since at least 1991. However, James Coplien was first to describe them formally as a class of *patterns* (see [CoplienCRTP]). Since then, many applications of CRTP have been published. The phrase *parameterized inheritance* is sometimes wrongly equated with CRTP. As we have shown, CRTP does not require the derivation to be parameterized at all, and many forms of parameterized inheritance do not conform to CRTP. CRTP is also sometimes confused with the Barton-Nackman trick (see Section [[21.2.1]] on page [[497]]) because Barton and Nackman frequently used CRTP in combination with friend name injection (and the latter is an important component of the Barton-Nackman trick). Our use of CRTP with the Barton-Nackman trick to provide operator implementations follows the same basic approach as the Boost.Operators library ([BoostOperators]), which provides an extensive set of operator definitions. Similarly, our treatment of iterator facades follows that of the Boost.Iterator library ([BoostIterator]) which provides a rich, standard-library compliant iterator interface for a derived type that provides a few core iterator operations (equality, dereference, movement), and also addresses tricky issues involving proxy iterators (which we did not address for the sake of brevity). Our `ObjectCounter` example is almost identical to a technique developed by Scott Meyers in [MeyersCounting].
+CRTP has been in use since at least 1991. However, James Coplien was first to describe them formally as a class of *patterns* (see [CoplienCRTP). Since then, many applications of CRTP have been published. The phrase *parameterized inheritance* is sometimes wrongly equated with CRTP. As we have shown, CRTP does not require the derivation to be parameterized at all, and many forms of parameterized inheritance do not conform to CRTP. CRTP is also sometimes confused with the Barton-Nackman trick (see Section [[21.2.1]] on page [[497]]) because Barton and Nackman frequently used CRTP in combination with friend name injection (and the latter is an important component of the Barton-Nackman trick). Our use of CRTP with the Barton-Nackman trick to provide operator implementations follows the same basic approach as the Boost.Operators library ([BoostOperators]), which provides an extensive set of operator definitions. Similarly, our treatment of iterator facades follows that of the Boost.Iterator library ([BoostIterator]) which provides a rich, standard-library compliant iterator interface for a derived type that provides a few core iterator operations (equality, dereference, movement), and also addresses tricky issues involving proxy iterators (which we did not address for the sake of brevity). Our `ObjectCounter` example is almost identical to a technique developed by Scott Meyers in [MeyersCounting].
 
 The notion of *mixins* has been around in Object-Oriented programming since at least 1986 ([Moon-Flavors]) as a way to introduce small pieces of functionality into an OO class. The use of templates for mixins in C++ became popular shortly after the first C++ standard was published, with two papers ([SmaragdakisBatoryMixins] and [EiseneckerBlinnCzarnecki]) describing the approaches commonly used today for mixins. Since then, it's become a popular technique in C++ library design.
 
@@ -15737,7 +13930,7 @@ Named template arguments are used to simplify certain class templates in the Boo
 
 ^[5]^ Note that a similar language extension for function call arguments was proposed (and rejected) earlier in the C++ standardization process (see Section [[17.4]] on page [[358]] for details).
 
-^[6]^ You can find the domination rule in Section 10.2/6 in the first C++ standard (see [C++98]) and a discussion about it in Section 10.1.1 of [EllisStroustrupARM].
+^[6]^ You can find the domination rule in Section 10.2/6 in the first C++ standard (see [C++98) and a discussion about it in Section 10.1.1 of [EllisStroustrupARM].
 
 
 
@@ -15761,15 +13954,15 @@ Function objects are useful for providing customizable behavior to templates. Fo
 #include <iostream>
 \
 template<typename F>
-void forUpTo[(int] n, F f)
+void forUpTo(int] n, F f)
 {
-   [for] [(int] i = 0; i != n; ++i)
+   [for] (int] i = 0; i != n; ++i)
   {
     f(i);  // call passed function [f] for [i]\
   }
 }
 \
-void printInt[(int] i)
+void printInt(int] i)
 {
   std::cout << i << ['] ';\
 }
@@ -15798,9 +13991,9 @@ One approach to limit this increase in code size is to turn the function templat
 
 *bridge/forupto2.hpp*
 
-void forUpTo[(int] n, void (\*f)[(int]))
+void forUpTo(int] n, void (\*f)(int))
 {
-  [for] [(int] i = 0; i != n; ++i)
+  [for] (int] i = 0; i != n; ++i)
   {
     f(i);   // call passed function [f] for [i]\
   }
@@ -15826,9 +14019,9 @@ The standard library's class template `std::function<>` permits an alternative f
 
 #include <functional>
 \
-void forUpTo[(int] n, std::function[<void][(int])> f)
+void forUpTo(int] n, std::function[<void](int)> f)
 {
-  [for] [(int] i = 0; i != n; ++i)
+  [for] (int] i = 0; i != n; ++i)
   {
     f(i) // call passed function [f] for [i]\
   }
@@ -15862,15 +14055,15 @@ In the remainder of this chapter, we will build our own generalized function poi
 #include <vector>
 #include <iostream>
 \
-void forUpTo[(int] n, FunctionPtr[<void][(int])> f)
+void forUpTo(int] n, FunctionPtr[<void](int)> f)
 {
-  [for] [(int] i = 0; i != n; ++i)
+  [for] (int] i = 0; i != n; ++i)
   {
     f(i);  // call passed function [f] for [i]\
   }
 }
 \
-void printInt[(int] i)
+void printInt(int] i)
 {
   std::cout << i << ['] ';\
 }
@@ -15909,11 +14102,11 @@ class FunctionPtr<R(Args...)>
   FunctorBridge<R, Args...>\* bridge;\
  public:
   // constructors:
-  FunctionPtr() : bridge[(nullptr]) {
+  FunctionPtr() : bridge(nullptr) {
   }
   FunctionPtr(FunctionPtr const& other);  // see functionptr-cpinv.hpp
   FunctionPtr(FunctionPtr& other)
-    : FunctionPtr[(static_cast]<FunctionPtr const&>(other)) {
+    : FunctionPtr(static_cast]<FunctionPtr const&>(other)) {
   }
   FunctionPtr(FunctionPtr&& other) : bridge(other.bridge) {
     other.bridge = [nullptr];\
@@ -15986,7 +14179,7 @@ Using these virtual functions, we can implement `FunctionPtr`'s copy constructor
 
 template<typename R, typename... Args>
 FunctionPtr<R(Args...)>::FunctionPtr(FunctionPtr const& other)
- : bridge[(nullptr])
+ : bridge(nullptr)
 {
   if (other.bridge) {
     bridge = other.bridge->clone();
@@ -16092,9 +14285,9 @@ class IsEqualityComparable\
 {
  private:\
   // test convertibility of [==] and [! ==] to [bool]:
-  [static void]\* conv[(bool]);  // to check convertibility to [bool]\
+  [static void]\* conv(bool);  // to check convertibility to [bool]\
   template<typename U>
-   [static] std::true_type test[(decltype](conv(std::declval<U const&>() ==\
+   [static] std::true_type test(decltype](conv(std::declval<U const&>() ==\
                                             std::declval<U const&>())),\
                               decltype(conv(!(std::declval<U const&>() ==\
                                               std::declval<U const&>())))
@@ -16103,8 +14296,8 @@ class IsEqualityComparable\
 template<typename U>
  [static] std::false_type test(...);
 public:
- [static constexpr bool] value = decltype(test<T>[(nullptr],\
-                                                [nullptr]))::value;\
+ [static constexpr bool] value = decltype(test<T>(nullptr],\
+                                                [nullptr))::value;\
 };
 
 The `IsEqualityComparable` trait applies the typical form for expression-testing traits as introduced in Section [[19.4.1]] on page [[416]]: two `test()` overloads, one of which contains the expressions to test wrapped in `decltype`, and the other that accepts arbitrary arguments via an ellipsis. The first `test()` function attempts to compare two objects of type `T const` using `==` and then ensures that the result can be both implicitly converted to `bool` (for the first parameter) and passed to the logical negation operator `operator!`) with a result convertible to `bool`. If both operations are well formed, the parameter types themselves will both be `void*`.
@@ -16145,7 +14338,7 @@ Finally, by using `TryEquals` within our implementation of `SpecificFunctorBridg
 [Click here to view code image]
 
 [virtual bool] equals(FunctorBridge<R, Args...> const\* fb) const override {
-  if [(auto] specFb = [dynamic_cast]<SpecificFunctorBridge const\*>(fb)) {
+  if (auto] specFb = [dynamic_cast]<SpecificFunctorBridge const\*>(fb)) {
     return TryEquals<Functor>::equals(functor, specFb->functor);
   }
   //functors with different types are never equal:
@@ -16756,9 +14949,9 @@ struct Pow3<0> {
    [static int const] value = 1;\
 };
 
-However, there is a drawback with this version: Static constant members are lvalues (see [Appendix [B]]). So, if we have a declaration such as
+However, there is a drawback with this version: Static constant members are lvalues (see [Appendix [B]). So, if we have a declaration such as
 
-void foo[(int const]&);
+void foo(int const]&);
 
 and we pass it the result of a metaprogram:
 
@@ -16800,7 +14993,7 @@ struct is_prime<0,1> {
 \
 template<int i>
 struct D {
-  D([void]\*);
+  D([void]\*]);
 };
 \
 template<int i>
@@ -16831,9 +15024,9 @@ struct Prime_print<1> \
   };
 };
 \
-[#ifndef] LAST\
-[#define] LAST 18\
-[#endif]\
+#ifndef LAST\
+#define LAST 18\
+#endif\
 \
 int main()
 {
@@ -16853,11 +15046,11 @@ unruh.cpp:39:14: error: no viable conversion from 'const int' to 'D<5>'\
 unruh.cpp:39:14: error: no viable conversion from 'const int' to 'D<3>'\
 unruh.cpp:39:14: error: no viable conversion from 'const int' to 'D<2>'\
 
-The concept of C++ template metaprogramming as a serious programming tool was first made popular (and somewhat formalized) by Todd Veldhuizen in his paper *Using C++ Template Metaprograms* (see [VeldhuizenMeta95]). Todd's work on Blitz++ (a numeric array library for C++, see [Blitz++]) also introduced many refinements and extensions to metaprogramming (and to expression template techniques, introduced in [Chapter [27]]).
+The concept of C++ template metaprogramming as a serious programming tool was first made popular (and somewhat formalized) by Todd Veldhuizen in his paper *Using C++ Template Metaprograms* (see [VeldhuizenMeta95). Todd's work on Blitz++ (a numeric array library for C++, see [Blitz++) also introduced many refinements and extensions to metaprogramming (and to expression template techniques, introduced in [Chapter [27]).
 
-Both the first edition of this book and Andrei Alexandrescu's "Modern C++ Design" (see [AlexandrescuDesign]) contributed to an explosion of C++ libraries exploiting template-based metaprogramming by cataloging some of the basic techniques that are still in use today. The Boost project (see [Boost]) was instrumental in bringing order to this explosion. Early on, it introduced the MPL (meta-programming library), which defined a consistent framework for *type metaprogramming* made popular also through Abrahams and Gurtovoy's book "C++ Template Metaprogramming" (see [Boost-MPL]).
+Both the first edition of this book and Andrei Alexandrescu's "Modern C++ Design" (see [AlexandrescuDesign) contributed to an explosion of C++ libraries exploiting template-based metaprogramming by cataloging some of the basic techniques that are still in use today. The Boost project (see [Boost) was instrumental in bringing order to this explosion. Early on, it introduced the MPL (meta-programming library), which defined a consistent framework for *type metaprogramming* made popular also through Abrahams and Gurtovoy's book "C++ Template Metaprogramming" (see [Boost-MPL).
 
-Additional important advances have been made by Louis Dionne in making metaprogramming syntactically more accessible, particularly through his Boost.Hana library (see [BoostHana]). Louis, along with Andrew Sutton, Herb Sutter, David Vandevoorde, and others are now spearheading efforts in the standardization committee to give metaprogramming first-class support in the language. An important basis for that work is the exploration of what program properties should be available through reflection; Matúš Chochlík, Axel Naumann, and David Sankel are principal contributors in that area.
+Additional important advances have been made by Louis Dionne in making metaprogramming syntactically more accessible, particularly through his Boost.Hana library (see [BoostHana). Louis, along with Andrew Sutton, Herb Sutter, David Vandevoorde, and others are now spearheading efforts in the standardization committee to give metaprogramming first-class support in the language. An important basis for that work is the exploration of what program properties should be available through reflection; Matúš Chochlík, Axel Naumann, and David Sankel are principal contributors in that area.
 
 In [BartonNackman] John J. Barton and Lee R. Nackman illustrated how to keep track of dimensional units when performing computations. The *SIunits* library was a more comprehensive library for dealing with physical units developed by Walter Brown ([BrownSIunits]). The `std::chrono` component in the standard library, which we used as an inspiration for Section [[23.1.4]] on page [[534]], only deals with time and dates, and was contributed by Howard Hinnant.
 
@@ -17059,7 +15252,7 @@ class LargestTypeT\
   using First = Front<List>;\
   using Rest = typename LargestTypeT<PopFront<List>>::Type;\
  public:
-  using Type = IfThenElse<([sizeof](First) >= [sizeof](Rest)), First, Rest>;\
+  using Type = IfThenElse<([sizeof](First]) >= [sizeof](Rest)), First, Rest>;\
 };
 \
 // basis case:
@@ -17079,7 +15272,7 @@ The primary template for `LargestTypeT` doubles as the recursive case for the al
 
 The recursion terminates when the list is empty. By default, we use `char` as a sentinel type to initialize the algorithm, because every type is as large as `char`.
 
-Note that the basis case explicitly mentions the empty typelist `Typelist<>`. This is somewhat unfortunate, because it precludes the use of other forms of typelists, which we'll return to in later sections (including Section [[24.3]] on page [[566]], Section [[24.5]] on page [[571]], and [Chapter [25]]). To address this problem, we introduce an `IsEmpty` metafunction that determines whether the given typelist has no elements:
+Note that the basis case explicitly mentions the empty typelist `Typelist<>`. This is somewhat unfortunate, because it precludes the use of other forms of typelists, which we'll return to in later sections (including Section [[24.3]] on page [[566]], Section [[24.5]] on page [[571]], and [Chapter [25]). To address this problem, we introduce an `IsEmpty` metafunction that determines whether the given typelist has no elements:
 
 [Click here to view code image]
 
@@ -17107,7 +15300,7 @@ Using `IsEmpty`, we can implement `LargestType` so that it works equally well fo
 template<typename List, [bool] Empty = IsEmpty<List>::value>
 class LargestTypeT;\
 \
-*[// recursive case:]*\
+// recursive case:]*\
 template<typename List>
 class LargestTypeT<List, [false]>
 {
@@ -17115,13 +15308,13 @@ class LargestTypeT<List, [false]>
   using Contender = Front<List>;\
   using Best = typename LargestTypeT<PopFront<List>>::Type;\
  public:
-  using Type = IfThenElse<[(sizeof](Contender) >= [sizeof](Best)),\
+  using Type = IfThenElse<(sizeof](Contender) >= [sizeof](Best)),\
 \
                            Contender, Best>;\
 \
 };
 \
-*[// basis case:]*\
+// basis case:]*\
 template<typename List>
 class LargestTypeT<List, [true]>
 {
@@ -17164,7 +15357,7 @@ However, as with the `LargestType` algorithm, we can implement a general algorit
 template<typename List, typename NewElement, [bool] = IsEmpty<List>::value>
 class PushBackRecT;\
 \
-*[// recursive case:]*\
+// recursive case:]*\
 template<typename List, typename NewElement>
 class PushBackRecT<List, NewElement, [false]>
 {
@@ -17176,7 +15369,7 @@ class PushBackRecT<List, NewElement, [false]>
   using Type = PushFront<Head, NewTail>;\
 };
 \
-*[// basis case:]*\
+// basis case:]*\
 template<typename List, typename NewElement>
 class PushBackRecT<List, NewElement, [true]>
 {
@@ -17184,7 +15377,7 @@ class PushBackRecT<List, NewElement, [true]>
   using Type = PushFront<List, NewElement>;\
 };
 \
-*[// generic push-back operation:]*\
+// generic push-back operation:]*\
 template<typename List, typename NewElement>
 class PushBackT : [public] PushBackRecT<List, NewElement> ;\
 \
@@ -17249,13 +15442,13 @@ class ReverseT;\
 template<typename List>
 using Reverse = typename ReverseT<List>::Type;\
 \
-*[// recursive case:]*\
+// recursive case:]*\
 template<typename List>
 class ReverseT<List, [false]>
 \
  : [public] PushBackT<Reverse<PopFront<List>>, Front<List>> ;\
 \
-*[// basis case:]*\
+// basis case:]*\
 template<typename List>
 class ReverseT<List, [true]>
 {
@@ -17313,7 +15506,7 @@ template<typename List, template[<typename] T> class MetaFun,\
 [bool] Empty = IsEmpty<List>::value>
 class TransformT;\
 \
-*[// recursive case:]*\
+// recursive case:]*\
 template<typename List, template[<typename] T> class MetaFun>
 class TransformT<List, MetaFun, [false]>
 \
@@ -17354,7 +15547,7 @@ template<typename List,\
          [bool] = IsEmpty<List>::value>
 class AccumulateT;\
 \
-*[// recursive case:]*\
+// recursive case:]*\
 template<typename List,\
          template<typename X, typename Y> class F,\
           typename I>
@@ -17365,7 +15558,7 @@ class AccumulateT<List, F, I, [false]>
 {
 };
 \
-*[// basis case:]*\
+// basis case:]*\
 template<typename List,\
          template<typename X, typename Y> class F,\
          typename I>
@@ -17459,7 +15652,7 @@ template<typename List,\
          template<typename T, typename U> class Compare>
 using InsertionSort = typename InsertionSortT<List, Compare>::Type;\
 \
-*[// recursive case (insert first element into sorted list):]*\
+// recursive case (insert first element into sorted list):]*\
 template<typename List,\
          template<typename T, typename U> class Compare>
 class InsertionSortT<List, Compare, [false]>
@@ -17468,7 +15661,7 @@ class InsertionSortT<List, Compare, [false]>
 {
 };
 \
-*[// basis case (an empty list is sorted):]*\
+// basis case (an empty list is sorted):]*\
 template<typename List,\
          template<typename T, typename U> class Compare>
 class InsertionSortT<List, Compare, [true]>
@@ -17493,19 +15686,19 @@ template<typename List, typename Element,\
          [bool] = IsEmpty<List>::value>
 class InsertSortedT;\
 \
-*[// recursive case:]*\
+// recursive case:]*\
 template<typename List, typename Element,\
          template<typename T, typename U> class Compare>
 class InsertSortedT<List, Element, Compare, [false]>
 {
 \
-  *[// compute the tail of the resulting list:]*\
+  // compute the tail of the resulting list:]*\
   using NewTail =\
     typename IfThenElse<Compare<Element, Front<List>>::value,\
                         IdentityT<List>,\
                         InsertSortedT<PopFront<List>, Element, Compare>
              >::Type;\
-*[// compute the head of the resulting list:]*\
+// compute the head of the resulting list:]*\
 using NewHead = IfThenElse<Compare<Element, Front<List>>::value,\
                            Element,\
                            Front<List>>;\
@@ -17513,7 +15706,7 @@ using NewHead = IfThenElse<Compare<Element, Front<List>>::value,\
   using Type = PushFront<NewTail, NewHead>;\
 };
 \
-*[// basis case:]*\
+// basis case:]*\
 template<typename List, typename Element,\
          template<typename T, typename U> class Compare>
 class InsertSortedT<List, Element, Compare, [true]>
@@ -17957,7 +16150,7 @@ The recursive formulation of tuple storage is based on the idea that a tuple con
 template<typename... Types>
 class Tuple;\
 \
-*[// recursive case:]*\
+// recursive case:]*\
 template<typename Head, typename... Tail>
 class Tuple<Head, Tail...>
 {
@@ -17965,7 +16158,7 @@ class Tuple<Head, Tail...>
   Head head;\
   Tuple<Tail...> tail;\
  public:
-  *[// constructors:]*\
+  // constructors:]*\
   Tuple() {
   }
   Tuple(Head const& head, Tuple<Tail...> const& tail)
@@ -17979,11 +16172,11 @@ class Tuple<Head, Tail...>
   Tuple<Tail...> const& getTail() const  tail; }
 };
 \
-*[// basis case:]*\
+// basis case:]*\
 template<>
 class Tuple<> {
 \
-  *[// no storage required]*\
+  // no storage required]*\
 };
 
 In the recursive case, each `Tuple` instance contains a data member `head` that stores the first element in the list, along with a data member `tail` that stores the remaining elements in the list. The basis case is simply the empty tuple, which has no associated storage.
@@ -17994,7 +16187,7 @@ The `get` function template walks this recursive structure to extract the reques
 
 `tuples/tupleget.hpp`
 
-*[// recursive case:]*\
+// recursive case:]*\
 template<[unsigned] N>
 struct TupleGet {
   template<typename Head, typename... Tail>
@@ -18003,7 +16196,7 @@ struct TupleGet {
   }
 };
 \
-*[// basis case:]*\
+// basis case:]*\
 template<>
 struct TupleGet<0> {
   template<typename Head, typename... Tail>
@@ -18124,13 +16317,13 @@ Tuples are structural types that contain other values. To compare two tuples, it
 
 `tuples/tupleeq.hpp`
 
-*[// basis case:]*\
+// basis case:]*\
 [bool operator]==(Tuple<> const&, Tuple<> const&)
 {
-  *[// empty tuples are always equivalent]*\
+  // empty tuples are always equivalent]*\
   [return true];\
 }
- *[// recursive case:]*\
+ // recursive case:]*\
 template<typename Head1, typename... Tail1,\
          typename Head2, typename... Tail2,\
          typename = std::enable_if_t[<sizeof]...(Tail1)=[=sizeof]...(Tail2)>>
@@ -18153,19 +16346,19 @@ Throughout this chapter, we will be creating new tuple types, so it is useful to
 
 #include <iostream>
 \
-void printTuple(std::ostream& strm, Tuple<> const&, [bool] isFirst = [true])
+void printTuple(std::ostream& strm, Tuple<> const&, [bool] isFirst = [true)
 {
   strm << ( isFirst ? ['('] : [')'] );
 }
 \
 template<typename Head, typename... Tail>
 void printTuple(std::ostream& strm, Tuple<Head, Tail...> const& t,\
-                [bool] isFirst = [true])
+                [bool] isFirst = [true)
 \
 {
   strm << ( isFirst ? "(" : ", " );
   strm << t.getHead();
-  printTuple(strm, t.getTail(), [false]);
+  printTuple(strm, t.getTail(), [false);
 }
 \
 template<typename... Types>
@@ -18179,7 +16372,7 @@ Now, it is easy to create and display tuples. For example:
 
 [Click here to view code image]
 
-std::cout << makeTuple(1, 2.5, std::string[(\"hello")) << '\n';
+std::cout << makeTuple(1, 2.5, std::string(\"hello")) << '\n';
 
 prints
 
@@ -18199,33 +16392,33 @@ If we ignore the actual run-time component of our `Tuple` template, we see that 
 
 `tuples/tupletypelist.hpp`
 
-*[// determine whether the tuple is empty:]*\
+// determine whether the tuple is empty:]*\
 template<>
 struct IsEmpty<Tuple<>> {
   [static constexpr bool] value = [true];\
 };
 \
-*[// extract front element:]*\
+// extract front element:]*\
 template<typename Head, typename... Tail>
 class FrontT<Tuple<Head, Tail...>> {
  public:
   using Type = Head;\
 };
- *[// remove front element:]*\
+ // remove front element:]*\
 template<typename Head, typename... Tail>
 class PopFrontT<Tuple<Head, Tail...>> {
  public:
   using Type = Tuple<Tail...>;\
 };
 \
-*[// add element to the front:]*\
+// add element to the front:]*\
 template<typename... Types, typename Element>
 class PushFrontT<Tuple<Types...>, Element> {
  public:
   using Type = Tuple<Element, Types...>;\
 };
 \
-*[// add element to the back:]*\
+// add element to the back:]*\
 template<typename... Types, typename Element>
 class PushBackT<Tuple<Types...>, Element> {
  public:
@@ -18239,7 +16432,7 @@ Now, all of the typelist algorithms developed in [Chapter [24]] work equally wel
 Tuple<int, [double], std::string> t1(17, 3.14, "Hello, World!");
 using\
 T2 = PopFront<PushBack[<decltype](t1), [bool]>>;\
-T2 t2(get<1>(t1), get<2>(t1), [true]);
+T2 t2(get<1>(t1), get<2>(t1), [true);
 std::cout << t2;
 
 which prints:
@@ -18271,7 +16464,7 @@ Adding a new element to the end of an existing tuple is more complicated, becaus
 
 `tuples/pushback.hpp`
 
-*[// basis case]*\
+// basis case]*\
 template<typename V>
 \
 Tuple<V> pushBack(Tuple<> const&, V const& value)
@@ -18279,7 +16472,7 @@ Tuple<V> pushBack(Tuple<> const&, V const& value)
   return Tuple<V>(value);
 }
 \
-*[// recursive case]*\
+// recursive case]*\
 template<typename Head, typename... Tail, typename V>
 Tuple<Head, Tail..., V>
 pushBack(Tuple<Head, Tail...> const& tuple, V const& value)
@@ -18307,12 +16500,12 @@ Now we can program the example from Section [[25.3.1]] on page [[582]] as follow
 [Click here to view code image]
 
 Tuple<int, [double], std::string> t1(17, 3.14, "Hello, World!");
-auto t2 = popFront(pushBack(t1, [true]));
+auto t2 = popFront(pushBack(t1, [true));
 std::cout << std::boolalpha << t2 << '\n';\
 
 which prints
 
-(3.14, Hello, World!, [true])
+(3.14, Hello, World!, [true)
 
 #### 25.3.3 Reversing a Tuple 
 
@@ -18339,7 +16532,7 @@ The basis case is trivial, while the recursive case reverses the tail of the lis
 
 [Click here to view code image]
 
-reverse(makeTuple(1, 2.5, std::string[(\"hello")))
+reverse(makeTuple(1, 2.5, std::string(\"hello")))
 
 will produce a `Tuple<string, double, int>` with the values `string("hello")`, `2.5`, and `1`, respectively.
 
@@ -18630,7 +16823,7 @@ int main()
   std::vector<std::string> strings = [, "apple", "cherry"};
   std::vector<[unsigned]> indices = ;\
   std::sort(indices.begin(), indices.end(),\
-            [&strings]([unsigned] i, [unsigned] j) {
+            [&strings]([unsigned] i, [unsigned] j]) {
                 return strings[i] < strings[j];\
             });
 }
@@ -18647,7 +16840,7 @@ Tuples are useful for storing a set of related values together into a single val
 
 [Click here to view code image]
 
-Tuple<std::string, [char const]\*, int, [char]> t[(\"Pi", "is roughly",\
+Tuple<std::string, [char const]\*, int, [char]> t(\"Pi", "is roughly",\
                                              3, '\n');
 print(t...); //ERROR: cannot expand a tuple; it isn't a parameter pack
 
@@ -18677,7 +16870,7 @@ The `applyImpl()` function template takes a given index list and uses it to expa
 
 [Click here to view code image]
 
-Tuple<std::string, [char const]\*, int, [char]> t[(\"Pi", "is roughly",\
+Tuple<std::string, [char const]\*, int, [char]> t(\"Pi", "is roughly",\
                                              3, '\n');
 apply(print, t); //OK: prints [Pi is roughly 3]
 
@@ -18736,28 +16929,28 @@ class TupleElt\
   T const& get() const  value; }
 };
 \
-*[// recursive case:]*\
+// recursive case:]*\
 template<typename Head, typename\... Tail>
 class Tuple<Head, Tail\...>
  : private TupleElt<Head>, private Tuple<Tail\...>
 {
  public:
   Head& getHead() {
-    *[// potentially ambiguous]*\
-    [return static_cast]<TupleElt<Head> \*>[(this])->get();
+    // potentially ambiguous]*\
+    [return static_cast]<TupleElt<Head> \*>(this)->get();
   }
   Head const& getHead() const {
-    *[// potentially ambiguous]*\
-    [return static_cast]<TupleElt<Head> const\*>[(this])->get();
+    // potentially ambiguous]*\
+    [return static_cast]<TupleElt<Head> const\*>(this)->get();
   }
   Tuple<Tail\...>& getTail()  [\*this]; }
   Tuple<Tail\...> const& getTail() const  [\*this]; }
 };
 \
-*[// basis case:]*\
+// basis case:]*\
 template<>
 class Tuple<> {
-  *[// no storage required]*\
+  // no storage required]*\
 };
 
 While this approach has solved the initialization-ordering problem, it has introduced a new (worse) problem: We can no longer extract elements from a tuple that has two elements of the same type, such as `Tuple<int, int>`, because the derived-to-base conversion from a tuple to `TupleElt` of that type (e.g., `TupleElt<int>`) will be ambiguous.
@@ -18790,7 +16983,7 @@ With this solution, we can produce a `Tuple` that applies the EBCO while maintai
 template<typename\... Types>
 class Tuple;\
 \
-*[// recursive case:]*\
+// recursive case:]*\
 template<typename Head, typename\... Tail>
 class Tuple<Head, Tail\...>
  : private TupleElt[<sizeof]\...(Tail), Head>, private Tuple<Tail\...>
@@ -18798,19 +16991,19 @@ class Tuple<Head, Tail\...>
   using HeadElt = TupleElt[<sizeof]\...(Tail), Head>;\
  public:
   Head& getHead() {
-    [return static_cast]<HeadElt \*>[(this])->get();
+    [return static_cast]<HeadElt \*>(this)->get();
  }
    Head const& getHead() const {
-    [return static_cast]<HeadElt const\*>[(this])->get();
+    [return static_cast]<HeadElt const\*>(this)->get();
   }
   Tuple<Tail\...>& getTail()  [\*this]; }
   Tuple<Tail\...> const& getTail() const  [\*this]; }
 };
 \
-*[// basis case:]*\
+// basis case:]*\
 template<>
 class Tuple<> {
-  *[// no storage required]*\
+  // no storage required]*\
 };
 
 With this implementation, the following program:
@@ -18967,25 +17160,25 @@ To make the usage of constant indices more convenient, we can implement the lite
 #include <cstddef>
 \
 // convert single char to corresponding `int` value at compile time:
-[constexpr int] toInt[(char] c) {
+[constexpr int] toInt(char] c) {
   // hexadecimal letters:
-  if (c >= ['A'] && c <= ['F']) {
-    [return static_cast][<int]>(c) - [static_cast][<int]>[('A']) + 10;\
+  if (c >= ['A'] && c <= ['F') {
+    [return static_cast][<int]>(c) - [static_cast][<int]>('A') + 10;\
   }
-  if (c >= ['a'] && c <= ['f']) {
-    [return static_cast][<int]>(c) - [static_cast][<int]>[('a']) + 10;\
+  if (c >= ['a'] && c <= ['f') {
+    [return static_cast][<int]>(c) - [static_cast][<int]>('a') + 10;\
   }
   // other (disable `’.’` for floating-point literals):
-  assert(c >= ['0'] && c <= ['9']);
-  [return static_cast][<int]>(c) - [static_cast][<int]>[('0']);
+  assert(c >= ['0'] && c <= ['9');
+  [return static_cast][<int]>(c) - [static_cast][<int]>('0');
 }
 // parse array of `char`s to corresponding `int` value at compile time:
 template<std::size_t N>
-[constexpr int] parseInt[(char const] (&arr)[N]) {
+[constexpr int] parseInt(char const] (&arr)[N) {
   int base = 10;       // to handle base (default: decimal)
   int offset = 0;      // to skip prefixes like 0x
-  if (N > 2 && arr[0] == ['0']) {
-    [switch] (arr[1]) {
+  if (N > 2 && arr[0] == ['0') {
+    [switch] (arr[1) {
       [case] ['x']:       //prefix `0x` or `0X`, so hexadecimal
       [case] ['X']:\
         base = 16;\
@@ -19004,8 +17197,8 @@ template<std::size_t N>
   int value = 0;\
   int multiplier = 1;\
   [for] (std::size_t i = 0; i < N - offset; ++i) {
-    if (arr[N-1-i] != ['\\''])  `1’000`)
-      `value += toInt(arr[N-1-i]) * multiplier;`\
+    if (arr[N-1-i] != ['\\'')  `1’000`)
+      `value += toInt(arr[N-1-i) * multiplier;`\
       multiplier \*= base;\
     }
   }
@@ -19036,13 +17229,13 @@ With this, we can use tuples as follows:
     auto c = t[2_c];\
     auto d = t[3_c];
 
-This approach is used by Boost.Hana (see [BoostHana]), a metaprogramming library suited for computations on both types and values.
+This approach is used by Boost.Hana (see [BoostHana), a metaprogramming library suited for computations on both types and values.
 
 ### 25.7 Afternotes 
 
 Tuple construction is one of those template applications that appears to have been independently attempted by many programmers. The Boost.Tuple Library [BoostTuple] became one of the most popular formulations of tuples in C++, and eventually grew into the C++11 `std::tuple`.
 
-Prior to C++11, many tuple implementations were based on the idea of a recursive pair structure; the first edition of this book, [VandevoordeJosuttisTemplates1st], illustrated one such approach via its "recursive duos." One interesting alternative was developed by Andrei Alexandrescu in [AlexandrescuDesign]. He cleanly separated the list of types from the list of fields in the tuple, using the concept of typelists (as discussed in [Chapter [24]]) as a foundation for tuples.
+Prior to C++11, many tuple implementations were based on the idea of a recursive pair structure; the first edition of this book, [VandevoordeJosuttisTemplates1st], illustrated one such approach via its "recursive duos." One interesting alternative was developed by Andrei Alexandrescu in [AlexandrescuDesign]. He cleanly separated the list of types from the list of fields in the tuple, using the concept of typelists (as discussed in [Chapter [24]) as a foundation for tuples.
 
 C++11 brought variadic templates, where parameter packs could clearly capture the list of types for a tuple, eliminating the need for recursive pairs. Pack expansions and the notion of index lists [GregorJarviPowellVariadicTemplates] collapsed recursive template instantiations into simpler, more efficient template instantiations, making tuples more widely practical. Index lists have become so critical to the performance of tuple and type list algorithms, that compilers include an intrinsic alias template such as `__make_integer_seq<S, T, N>` that expands to `S<T, 0, 1,` ...`, N>` without additional template instantiations, thereby accelerating applications of `std::make_index_sequence` and `make_integer_sequence`.
 
@@ -19120,7 +17313,7 @@ The variant can be assigned to a value of any of its types. We can test whether 
 
 ### 26.1 Storage 
 
-The first major design aspect of our `Variant` type is how to manage the storage of the *active value*, that is, the value that is currently stored within the variant. The different types likely have different sizes and alignments to consider. Additionally, the variant will need to store a *discriminator* to indicate which of the possible types is the type of the active value. One simple (albeit inefficient) storage mechanism uses a tuple (see [Chapter [25]]) directly:
+The first major design aspect of our `Variant` type is how to manage the storage of the *active value*, that is, the value that is currently stored within the variant. The different types likely have different sizes and alignments to consider. Additionally, the variant will need to store a *discriminator* to indicate which of the possible types is the type of the active value. One simple (albeit inefficient) storage mechanism uses a tuple (see [Chapter [25]) directly:
 
 [Click here to view code image]
 
@@ -19171,14 +17364,14 @@ class VariantStorage {
   [unsigned char] discriminator = 0;\
  public:
   [unsigned char] getDiscriminator() const  discriminator; }
-  void setDiscriminator[(unsigned char] d)     [void]\* getRawBuffer()  buffer; }
+  void setDiscriminator(unsigned char] d)     [void]\* getRawBuffer()  buffer; }
   [const void]\* getRawBuffer() const  buffer; }
 \
   template<typename T>
-    T* getBufferAs()  std::launder([reinterpret_cast]<T*>(buffer)); }
+    T* getBufferAs()  std::launder([reinterpret_cast]<T*>(buffer])); }
   template<typename T>
     T const\* getBufferAs() const {
-      return std::launder([reinterpret_cast]<T const\*>(buffer));
+      return std::launder([reinterpret_cast]<T const\*>(buffer]));
     }
 };
 
@@ -19424,10 +17617,10 @@ using VariantChoice<Types, Types...>::VariantChoice...;
 
 In effect, this using declaration produces `Variant` constructors that copy or move from each type `T` in `Types`. For a `Variant<int, double, string>`, the constructors are, effectively:
 
-Variant([int const]&);
+Variant([int const]&]);
 Variant(int&&);
-Variant([double const]&);
-Variant([double]&&);
+Variant([double const]&]);
+Variant([double]&&]);
 Variant(string const&);
 Variant(string&&);
 
@@ -19663,7 +17856,7 @@ void printImpl(V const& v)
   if (v.template is<Head>()) {
     std::cout << v.template get<Head>();
   }
-  [else if constexpr] [(sizeof]...(Tail) > 0) {
+  [else if constexpr] (sizeof]...(Tail) > 0) {
     printImpl<V, Tail...>(v);
   }
 }
@@ -19683,7 +17876,7 @@ This is a significant amount of code for a relatively simple operation. To simpl
 
 [Click here to view code image]
 
-v.visit([]([auto const]& value) {
+v.visit([]([auto const]& value]) {
             std::cout << value;\
         });
 
@@ -19714,7 +17907,7 @@ R variantVisitImpl(V&& variant, Visitor&& vis, Typelist<Head, Tail...>) {
              std::forward<Visitor>(vis)(\
                std::forward<V>(variant).template get<Head>()));
   }
-  [else if constexpr] [(sizeof]...(Tail) > 0) {
+  [else if constexpr] (sizeof]...(Tail) > 0) {
     return variantVisitImpl<R>(std::forward<V>(variant),\
                                std::forward<Visitor>(vis),\
                                Typelist<Tail...>());
@@ -19759,7 +17952,7 @@ template<typename... Types>
 VisitResult<R, Visitor, Types&&...>
 Variant<Types...>::visit(Visitor&& vis) && {
   using Result = VisitResult<R, Visitor, Types&&...>;\
-  return variantVisitImpl<Result>(std::move(\*[this]),\
+  return variantVisitImpl<Result>(std::move(\*[this),\
                                   std::forward<Visitor>(vis),\
                                   Typelist<Types...>());
 }
@@ -19770,7 +17963,7 @@ The implementations delegate to `variantVisitImpl` directly, passing along the v
 
 The result type of `visit()` remains a mystery. A given visitor might have different `operator()` overloads that produce different result types, a templated `operator()` whose result type is dependent on its parameter type, or some combination thereof. For example, consider the following generic lambda:
 
-[]([auto const]& value) {
+[]([auto const]& value]) {
   return value + 1;\
 }
 
@@ -19780,7 +17973,7 @@ There is no single correct answer, so our `visit()` operation allows the result 
 
 [Click here to view code image]
 
-v.visit<Variant<int, [double]>>([][(auto const]& value)  value + 1;                               });
+v.visit<Variant<int, [double]>>([](auto const]& value])  value + 1;                               });
 
 The ability to explicitly specify the result type is important when there is no one-size-fits-all solution. However, requiring that the result type be explicitly specified in all cases can be verbose. Therefore, `visit()` provides both options using the combination of a default template argument and a simple metaprogram. Recall the declaration of `visit()`:
 
@@ -19799,7 +17992,7 @@ To compute its result type, `visit` passes all of its template parameters along 
 
 `variant/variantvisitresult.hpp`
 
-*[// an explicitly-provided visitor result type:]*\
+// an explicitly-provided visitor result type:]*\
 template<typename R, typename Visitor, typename... ElementTypes>
 class VisitResultT\
 {
@@ -19839,7 +18032,7 @@ template<typename T, typename U>
 class CommonTypeT\
 {
  public:
-  using Type = decltype([true]? declval<T>() : declval<U>());
+  using Type = decltype([true]? declval<T>(]) : declval<U>());
 };
 \
 template<typename T, typename U>
@@ -19853,11 +18046,11 @@ The notion of a common type extends to a set of types: The common type is a type
 
 #include "accumulate.hpp"\
 #include "commontype.hpp"\
- *[// the result type produced when calling a visitor with a value of type T:]*\
+ // the result type produced when calling a visitor with a value of type T:]*\
 template<typename Visitor, typename T>
 using VisitElementResult = decltype(declval<Visitor>()(declval<T>()));
 \
-*[// the common result type for a visitor called with each of the given element types:]*\
+// the common result type for a visitor called with each of the given element types:]*\
 template<typename Visitor, typename... ElementTypes>
 class VisitResultT<ComputedResultType, Visitor, ElementTypes...>
 {
@@ -19900,7 +18093,7 @@ The following example program prints out the type produced by passing in a gener
 int main()
 {
   Variant<int, [short], [double], [float]> v(1.5);
-  auto result = v.visit([][(auto const]& value) {
+  auto result = v.visit([](auto const]& value]) {
                           return value + 1;\
                         });
   std::cout << [typeid](result).name() <<'\n';\
@@ -19970,7 +18163,7 @@ Copy and move initialization are more interesting. To copy a source variant, we 
 template<typename... Types>
 Variant<Types...>::Variant(Variant const& source) {
   if (!source.empty()) {
-    source.visit([&]([auto const]& value) {
+    source.visit([&]([auto const]& value]) {
                    \*[this] = value;\
                  });
   }
@@ -19985,7 +18178,7 @@ The move constructor is similar, differing only in its use of `std::move` when v
 template<typename... Types>
 Variant<Types...>::Variant(Variant&& source) {
   if (!source.empty()) {
-    std::move(source).visit([&](auto&& value) {
+    std::move(source).visit([&](auto&& value]) {
                               \*[this] = std::move(value);
                             });
   }
@@ -20001,7 +18194,7 @@ template<typename... Types>
  template<typename... SourceTypes>
 Variant<Types...>::Variant(Variant<SourceTypes...> const& source) {
   if (!source.empty()) {
-    source.visit([&]([auto const]& value) {
+    source.visit([&]([auto const]& value]) {
                    \*[this] = value;\
                  });
   }
@@ -20019,7 +18212,7 @@ Because this code visits the source, the assignment to `*this` will occur for ea
 \
 int main()
 {
-  Variant<[short], [float], [char const]\*> v1([(short])123);
+  Variant<[short], [float], [char const]\*> v1((short)123);
 \
   Variant<int, std::string, [double]> v2(v1);
    std::cout << "v2 contains the integer " << v2.get<int>() << '\n';\
@@ -20050,7 +18243,7 @@ The `Variant` assignment operators are similar to the copy and move constructors
 template<typename... Types>
 Variant<Types...>& Variant<Types...>:[:operator]= (Variant const& source) {
   if (!source.empty()) {
-    source.visit([&]([auto const]& value) {
+    source.visit([&]([auto const]& value]) {
                    \*[this] = value;\
                  });
   }
@@ -20132,7 +18325,7 @@ class SArray {
 
     // copy constructor
     SArray (SArray<T> const& orig)
-     : storage([new] T[orig.size()]), storage_size(orig.size()) {
+     : storage([new] T[orig.size(])), storage_size(orig.size()) {
         copy(orig);
     }
     // destructor: free memory
@@ -20142,7 +18335,7 @@ class SArray {
 
     // assignment operator
     SArray<T>& [operator]= (SArray<T> const& orig) {
-        if (&orig!=[this]) {
+        if (&orig!=[this) {
             copy(orig);
         } return \*[this];\
     }
@@ -20275,7 +18468,7 @@ SArray<T>& SArray<T>::[operator]+= (SArray<T> const& b)
 
     assert(size()==orig.size());
     [for] (std::size_t k = 0; k<size(); ++k) {
-        (\*[this])[k] += b[k];\
+        (\*[this)[k] += b[k];\
     }
     return \*[this];\
 }
@@ -20286,7 +18479,7 @@ SArray<T>& SArray<T>::[operator]\*= (SArray<T> const& b)
 {
     assert(size()==orig.size());
     [for] (std::size_t k = 0; k<size(); ++k) {
-        (\*[this])[k] \*= b[k];\
+        (\*[this)[k] \*= b[k];\
     }
     return \*[this];\
 }
@@ -20296,7 +18489,7 @@ template<typename T>
 SArray<T>& SArray<T>::[operator]\*= (T const& s)
 {
     [for] (std::size_t k = 0; k<size(); ++k) {
-        (\*[this])[k] \*= s;\
+        (\*[this)[k] \*= s;\
     }
     return \*[this];\
 }
@@ -20370,7 +18563,7 @@ into an object with the following type:
 A_Add<A_Mult<A_Scalar<[double]>,Array<[double]>>,\
       A_Mult<Array<[double]>,Array<[double]>>>
 
-We combine a new fundamental `Array` class template with class templates `A_Scalar`, `A_Add`, and `A_Mult`. You may recognize a prefix representation for the syntax tree corresponding to this expression (see Figure [[27.1]]). This nested template-id represents the operations involved and the types of the objects to which the operations should be applied. `A_Scalar` is presented later but is essentially just a placeholder for a scalar in an array expression.
+We combine a new fundamental `Array` class template with class templates `A_Scalar`, `A_Add`, and `A_Mult`. You may recognize a prefix representation for the syntax tree corresponding to this expression (see Figure [[27.1]). This nested template-id represents the operations involved and the types of the objects to which the operations should be applied. `A_Scalar` is presented later but is essentially just a placeholder for a scalar in an array expression.
 
 *Figure 27.1. Tree representation of expression* `1.2*x+x*y`
 
@@ -20449,24 +18642,24 @@ For operations involving arrays only, the size of the result is the size of eith
 
 *exprtmpl/exprscalar.hpp*
 
-*[// class for objects that represent scalars:]*\
+// class for objects that represent scalars:]*\
 template<typename T>
 class A_Scalar {
   private:\
     T const& s;  // value of the scalar
 
   public:
-    *[// constructor initializes value]*\
+    // constructor initializes value]*\
     [constexpr] A_Scalar (T const& v)
      : s(v) {
     }
 
-    *[// for index operations, the scalar is the value of each element]*\
+    // for index operations, the scalar is the value of each element]*\
     [constexpr] T const& [operator][] (std::size_t) const {
         return s;\
     }
 
-    *[// scalars have zero as size]*\
+    // scalars have zero as size]*\
     [constexpr] std::size_t size() const {
         return 0;\
     };
@@ -20507,24 +18700,24 @@ This is a perfect application of traits classes. The traits class defines a type
 
 *exprtmpl/exprops1a.hpp*
 
-*[// helper traits class to select how to refer to an expression template node]*\
-*[// - in general by reference]*\
-*[// - for scalars by value]*\
+// helper traits class to select how to refer to an expression template node]*\
+// - in general by reference]*\
+// - for scalars by value]*\
 
 template<typename T> class A_Scalar;\
 
-*[// primary template]*\
+// primary template]*\
 template<typename T>
 class A_Traits {
   public:
-    using ExprRef = T const&;     *[// type to refer to is constant reference]*\
+    using ExprRef = T const&;     // type to refer to is constant reference]*\
 };
 
-*[// partial specialization for scalars]*\
+// partial specialization for scalars]*\
 template<typename T>
 class A_Traits<A_Scalar<T>> {
   public:
-    using ExprRef = A_Scalar<T>;  *[// type to refer to is ordinary value]*\
+    using ExprRef = A_Scalar<T>;  // type to refer to is ordinary value]*\
 };
 
 Note that since `A_Scalar` objects refer to scalars in the top-level expression, those scalars can use reference types. That is, `A_Scalar<T>::s` is a reference member.
@@ -20556,17 +18749,17 @@ class Array {
     Rep expr_rep; // (access to) the data of the array
 
   public:
-    *[// create array with initial size]*\
+    // create array with initial size]*\
     [explicit] Array (std::size_t s)
      : expr_rep(s) {
     }
 
-    *[// create array from possible representation]*\
+    // create array from possible representation]*\
     Array (Rep const& rb)
      : expr_rep(rb) {
     }
 
-    *[// assignment operator for same type]*\
+    // assignment operator for same type]*\
     Array& [operator]= (Array const& b) {
         assert(size()==b.size());
         [for] (std::size_t idx = 0; idx<b.size(); ++idx) {
@@ -20575,7 +18768,7 @@ class Array {
         return \*[this];\
     }
 
-    *[// assignment operator for arrays of different type]*\
+    // assignment operator for arrays of different type]*\
     template<typename T2, typename Rep2>
     Array& [operator]= (Array<T2, Rep2> const& b) {
         assert(size()==b.size());
@@ -20585,12 +18778,12 @@ class Array {
         return \*[this];\
     }
 
-    *[// size is size of represented data]*\
+    // size is size of represented data]*\
     std::size_t size() const {
         return expr_rep.size();
     }
 
-    *[// index operator for constants and variables]*\
+    // index operator for constants and variables]*\
     decltype(auto) [operator][] (std::size_t idx) const {
         assert(idx<size());
         return expr_rep[idx];\
@@ -20600,7 +18793,7 @@ class Array {
         return expr_rep[idx];\
     }
 
-    *[// return what the array currently represents]*\
+    // return what the array currently represents]*\
     Rep const& rep() const {
         return expr_rep;\
     }
@@ -20623,7 +18816,7 @@ For each ordinary binary operator, we must implement three versions: array-array
 
 *exprtmpl/exprops2.hpp*
 
-*[// addition of two]* Array*[s:]*\
+// addition of two]* Array*[s:]*\
 template<typename T, typename R1, typename R2>
 Array<T,A_Add<T,R1,R2>>
 [operator]+ (Array<T,R1> const& a, Array<T,R2> const& b) {
@@ -20631,7 +18824,7 @@ Array<T,A_Add<T,R1,R2>>
            (A_Add<T,R1,R2>(a.rep(),b.rep()));
 }
 
-*[// multiplication of two]* Array*[s:]*\
+// multiplication of two]* Array*[s:]*\
 template<typename T, typename R1, typename R2>
 Array<T, A_Mult<T,R1,R2>>
 [operator]\* (Array<T,R1> const& a, Array<T,R2> const& b) {
@@ -20639,7 +18832,7 @@ Array<T, A_Mult<T,R1,R2>>
            (A_Mult<T,R1,R2>(a.rep(), b.rep()));
 }
 
-*[// multiplication of scalar and]* Array*[:]*\
+// multiplication of scalar and]* Array*[:]*\
 template<typename T, typename R2>
 Array<T, A_Mult<T,A_Scalar<T>,R2>>
 [operator]\* (T const& s, Array<T,R2> const& b) {
@@ -20647,8 +18840,8 @@ Array<T, A_Mult<T,A_Scalar<T>,R2>>
            (A_Mult<T,A_Scalar<T>,R2>(A_Scalar<T>(s), b.rep()));
 }
 
-*[// multiplication of]* Array *[and scalar, addition of scalar and]* Array\
-*[// addition of]* Array *[and scalar:]*\
+// multiplication of]* Array *[and scalar, addition of scalar and]* Array\
+// addition of]* Array *[and scalar:]*\
 ...
 
 The declaration of these operators is somewhat cumbersome (as can be seen from these examples), but the functions really don't do much. For example, the plus operator for two arrays first creates an `A_Add<>` object that represents the operator and the operands
@@ -20798,7 +18991,7 @@ Carefully tracing this subscript operator shows that for a given subscript `idx`
 
 [Click here to view code image]
 
-(1.2\*x[idx]) + (x[idx]\*y[idx])
+(1.2\*x[idx) + (x[idx]\*y[idx)
 
 which is exactly what we want.
 
@@ -20875,7 +19068,7 @@ where `x` is a column vector of size `n` and `A` is an `n`-by-`n` matrix. The pr
 
 x = A\*y;
 
-on the other hand, does not need a temporary if `x` and `y` aren't aliases for each other, which implies that a solution would have to know the relationship of the operands at run time. This in turn suggests creating a run-time structure that represents the expression tree instead of encoding the tree in the type of the expression template. This approach was pioneered by the NewMat library of Robert Davies (see [NewMat]). It was known long before expression templates were developed.
+on the other hand, does not need a temporary if `x` and `y` aren't aliases for each other, which implies that a solution would have to know the relationship of the operands at run time. This in turn suggests creating a run-time structure that represents the expression tree instead of encoding the tree in the type of the expression template. This approach was pioneered by the NewMat library of Robert Davies (see [NewMat). It was known long before expression templates were developed.
 
 ### 27.4 Afternotes 
 
@@ -20942,11 +19135,11 @@ The `valarray` proposal came late in the C++ standardization process and practic
 
 Finally, it is worth observing here that many of the pioneering techniques presented in this chapter, as well as what later became known as the STL,[2] were all originally implemented on the same compiler: version 4 of the Borland C++ compiler. This was perhaps the first compiler that made template programming broadly popular in the C++ programming community.
 
-Expression templates were first applied primarily for operations on array-like types. However, after a few years, new applications were found. Among the most ground-breaking were Jaakko J¨arvi's and Gary Powell's Boost.Lambda library(see [LambdaLib]), which provided a usable lambda expression facility years before lambda expressions became a core language feature[3], and Eric Niebler's Boost.Proto library, which is a library to meta-program expression templates, with the goal of creating *embedded domain-specific languages* in C++. Other Boost libraries, like Boost.Fusion and Boost.Hana, also make advanced use of expression templates.
+Expression templates were first applied primarily for operations on array-like types. However, after a few years, new applications were found. Among the most ground-breaking were Jaakko J¨arvi's and Gary Powell's Boost.Lambda library(see [LambdaLib), which provided a usable lambda expression facility years before lambda expressions became a core language feature[3], and Eric Niebler's Boost.Proto library, which is a library to meta-program expression templates, with the goal of creating *embedded domain-specific languages* in C++. Other Boost libraries, like Boost.Fusion and Boost.Hana, also make advanced use of expression templates.
 
 ^[1]^ It is convenient to reuse the previously developed `SArray` here, but in an industrial-strength library, a special-purpose implementation may be preferable because we won't use all the features of `SArray`.
 
-^[2]^ The *Standard Template Library* (STL) revolutionized the world of C++ libraries and was later made part of the C++ standard library (see [JosuttisStdLib]).
+^[2]^ The *Standard Template Library* (STL) revolutionized the world of C++ libraries and was later made part of the C++ standard library (see [JosuttisStdLib).
 
 ^[3]^ Jaakko was also instrumental in developing the core language feature.
 
@@ -21044,11 +19237,11 @@ If `T` is a type such that `T::Index` cannot be dereferenced, an error is now di
 
 ##### Concept Checking 
 
-Clearly, the development of the dummy code in our example can become as complex as the code that implements the actual functionality of the template. To control this complexity, it is natural to attempt to collect various snippets of dummy code in some sort of library. For example, such a library could contain macros that expand to code that triggers the appropriate error when a template parameter substitution violates the concept underlying that particular parameter. The most popular such library is the *Concept Check Library*, which is part of the Boost distribution (see [BCCL]).
+Clearly, the development of the dummy code in our example can become as complex as the code that implements the actual functionality of the template. To control this complexity, it is natural to attempt to collect various snippets of dummy code in some sort of library. For example, such a library could contain macros that expand to code that triggers the appropriate error when a template parameter substitution violates the concept underlying that particular parameter. The most popular such library is the *Concept Check Library*, which is part of the Boost distribution (see [BCCL).
 
 Unfortunately, the technique isn't particularly portable (the way errors are diagnosed differs considerably from one compiler to another) and sometimes masks issues that cannot be captured at a higher level.
 
-Once we have *concepts* in C++ (see [Appendix [E]]), we have other ways to support the definition of requirements and expected behavior.
+Once we have *concepts* in C++ (see [Appendix [E]), we have other ways to support the definition of requirements and expected behavior.
 
 ### 28.2 Static Assertions 
 
@@ -21058,7 +19251,7 @@ The C++ `static_assert` keyword, introduced with C++11, serves the same purpose 
 
 [Click here to view code image]
 
-[static_assert]([sizeof]([void]\*) \* CHAR_BIT == 64, "Not a 64-bit platform");
+[static_assert]([sizeof]([void]\*]) \* CHAR_BIT == 64, "Not a 64-bit platform");
 
 Static assertions can be used to provide useful error messages when a template argument does not satisfy the constraints of a template. For example, using the techniques described in Section [[19.4]] on page [[416]], we can create a type trait to determine whether a given type is dereferenceable:
 
@@ -21208,14 +19401,14 @@ Here is an example of a tracer that might be used to test a sorting algorithm:[4
 class SortTracer {
   private:\
     int value;*[                           // integer value to be sorted]*\
-    int generation;                      *[// generation of this tracer]*\
-    [inline static long] n_created = 0;    *[// number of constructor calls]*\
-    [inline static long] n_destroyed = 0;  *[// number of destructor calls]*\
-    [inline static long] n_assigned = 0;   *[// number of assignments]*\
-    [inline static long] n_compared = 0;   *[// number of comparisons]*\
+    int generation;                      // generation of this tracer]*\
+    [inline static long] n_created = 0;    // number of constructor calls]*\
+    [inline static long] n_destroyed = 0;  // number of destructor calls]*\
+    [inline static long] n_assigned = 0;   // number of assignments]*\
+    [inline static long] n_compared = 0;   // number of comparisons]*\
     [inline static long] n_max_live = 0;   // maximum of existing objects
 
-    *[// recompute maximum of existing objects]*\
+    // recompute maximum of existing objects]*\
     [static void] update_max_live() {
         if (n_created-n_destroyed > n_max_live) {
             n_max_live = n_created-n_destroyed;\
@@ -21240,7 +19433,7 @@ class SortTracer {
     } 
 
   public:
-    *[// constructor]*\
+    // constructor]*\
     SortTracer (int v = 0) : value(v), generation(1) {
         ++n_created;\
         update_max_live();
@@ -21250,7 +19443,7 @@ class SortTracer {
                   << ")\n";\
     }
 
-    *[// copy constructor]*\
+    // copy constructor]*\
     SortTracer (SortTracer const& b)
      : value(b.value), generation(b.generation+1) {
         ++n_created;\
@@ -21261,7 +19454,7 @@ class SortTracer {
                   << ")\n";\
     }
 
-    *[// destructor]*\
+    // destructor]*\
     \~SortTracer() {
         ++n_destroyed;\
         update_max_live();
@@ -21270,7 +19463,7 @@ class SortTracer {
                   << n_created - n_destroyed << ")\n";\
     }
 
-    *[// assignment]*\
+    // assignment]*\
     SortTracer& [operator]= (SortTracer const& b) {
         ++n_assigned;\
         std::cerr << "SortTracer assignment #" << n_assigned\
@@ -21281,7 +19474,7 @@ class SortTracer {
         return \*[this];\
     }
 
-    *[// comparison]*\
+    // comparison]*\
     [friend bool operator] < (SortTracer const& a,\
                             SortTracer const& b) {
         ++n_compared;\
@@ -21312,34 +19505,34 @@ This particular tracer allows us to track the pattern of entity creation and des
 \
 int main()
 {
-    *[// prepare sample input:]*\
+    // prepare sample input:]*\
     SortTracer input[] = ;\
 
-    *[// print initial values:]*\
+    // print initial values:]*\
     [for] (int i=0; i<10; ++i) {
         std::cerr << input[i].val() << [' '];\
     }
     std::cerr << '\n';\
 
    
-    *[// remember initial conditions:]*\
+    // remember initial conditions:]*\
     [long] created_at_start = SortTracer::creations();
     [long] max_live_at_start = SortTracer::max_live();
     [long] assigned_at_start = SortTracer::assignments();
     [long] compared_at_start = SortTracer::comparisons();
 
-    *[// execute algorithm:]*\
+    // execute algorithm:]*\
     std::cerr << "\-\--[ Start std::sort() ]\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--\\n";\
     std::sort<>(&input[0], &input[9]+1);
     std::cerr << "\-\--[ End std::sort() ]\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\--\\n";\
 
-    *[// verify result:]*\
+    // verify result:]*\
     [for] (int i=0; i<10; ++i) {
         std::cerr << input[i].val() << [' '];\
     }
     std::cerr << "\\n\\n";\
 
-    *[// final report:]*\
+    // final report:]*\
     std::cerr << "std::sort() of 10 SortTracer's"\
               << " was performed by:\\n "\
               << SortTracer::creations() - created_at_start\
@@ -21378,7 +19571,7 @@ Oracles allow us, in some cases, to verify template algorithms dynamically witho
 
 ### 28.6 Afternotes 
 
-A fairly systematic attempt to improve C++ compiler diagnostics by adding dummy code in high-level templates can be found in Jeremy Siek's *Concept Check Library* (see [BCCL]). It is part of the Boost library (see [Boost]).
+A fairly systematic attempt to improve C++ compiler diagnostics by adding dummy code in high-level templates can be found in Jeremy Siek's *Concept Check Library* (see [BCCL). It is part of the Boost library (see [Boost).
 
 Robert Klarer and John Maddock proposed the `static_assert` feature to help programmers check conditions at compile time. It was among the earliest features added to what would later become C++11. Prior to that, it was commonly expressed as a library or macro using techniques similar to those described in Section [[28.1]] on page [[652]]. The Boost.StaticAssert library is one such implementation.
 
@@ -21487,26 +19680,26 @@ For example, a C++ program consisting of the following two translation units is 
 int counter;\
 \
 *//* ══ ***translation unit 2:***\
-int counter;                *[// ERROR: defined twice (ODR violation)]*
+int counter;                // ERROR: defined twice (ODR violation)]*
 
 This rule does not apply to entities with *internal linkage* (essentially, entities declared with the `static` specifier in the global scope or in a namespace scope) because even when two such entities have the same name, they are considered distinct. In the same vein, entities declared in unnamed namespaces are considered distinct if they appear in distinct translation units; in C++11 and later, such entities also have internal linkage by default, but prior to C++11 they had external linkage by default. For example, the following two translation units can be combined into a valid C++ program:
 
 [Click here to view code image]
 
 *//* ══ ***translation unit 1:***\
-[static int] counter = 2;  *[// unrelated to other translation units]*\
+[static int] counter = 2;  // unrelated to other translation units]*\
 \
 namespace {
-    void unique()        *[// unrelated to other translation units]*\
+    void unique()        // unrelated to other translation units]*\
     {
     }
 }
 \
 *//* ══ ***translation unit 1:***\
-[static int] counter = 0;  *[// unrelated to other translation units]*\
+[static int] counter = 0;  // unrelated to other translation units]*\
 \
 namespace {
-    void unique()        *[// unrelated to other translation units]*\
+    void unique()        // unrelated to other translation units]*\
     {
        ++counter;\
     }
@@ -21530,7 +19723,7 @@ class Decider {
 [#if] defined(DYNAMIC)
     [virtual] \~Decider() {
     }
-[#endif]\
+#endif\
 };
 \
 [extern] Decider d;\
@@ -21538,7 +19731,7 @@ class Decider {
 int main()
 {
     [char const]\* name = [typeid](d).name();
-    return [(int][)sizeof](d);
+    return (int][)sizeof](d);
 \
 }
 
@@ -21553,16 +19746,16 @@ No entity can be defined more than once in a translation unit. So the following 
 [Click here to view code image]
 
 [inline void] f() \
-[inline void] f()   *[// ERROR: duplicate definition]*
+[inline void] f()   // ERROR: duplicate definition]*
 
 This is one of the main reasons for surrounding the code in header files with *guards*:
 
 *//* ══ ***guarddemo.hpp:***\
-[#ifndef] GUARDDEMO_HPP\
-[#define] GUARDDEMO_HPP\
+#ifndef GUARDDEMO_HPP\
+#define GUARDDEMO_HPP\
 ...
 \
-[#endif]  *[// GUARDDEMO_HPP]*\
+#endif  // GUARDDEMO_HPP]*\
 
 Such guards ensure that the second time a header file is `#include`d, its contents are discarded, thereby avoiding the duplicate definition of a class, inline entity, template, and so on, that it may contain.
 
@@ -21637,14 +19830,14 @@ Placing the definitions of entities that can be defined in multiple translation 
 The cross-translation unit constraints apply not only to entities that can be defined in multiple places but also to default arguments in declarations. In other words, the following program has undefined behavior:
 
 *//* ══ ***translation unit 1:***\
-void unused[(int] = 3);
+void unused(int] = 3);
 \
 int main()
 {
 }
 \
 *//* ══ ***translation unit 2:***\
-void unused[(int] = 4);
+void unused(int] = 4);
 
 We should note here that the equivalence of token streams can sometimes involve subtle implicit effects. The following example is lifted (in a slightly modified form) from the C++ standard:
 
@@ -21664,7 +19857,7 @@ class D {
   X x = 0;\
 };
 \
-D d1;*[//]* [X(int, int)] *[called by]* D()
+D d1;//]* [X(int, int)] *[called by]* D()
 \
 *//* ══ ***translation unit 2:***\
 class X {
@@ -21681,15 +19874,15 @@ class D : [public] X {
   X x = 0;\
 };
 \
-D d2;*[//]* [X(int, int, int)] *[called by]* [D()]
+D d2;//]* [X(int, int, int)] *[called by]* [D()]
 
 In this example, the problem occurs because the implicitly generated default constructor of class `D` is different in the two translation units. One calls the `X` constructor taking two arguments, and the other calls the `X` constructor taking three arguments. If anything, this example is an additional incentive to limit default arguments to one location in the program (if possible, this location should be in a header file). Fortunately, placing default arguments on out-of-class definitions is a rare practice.
 
 There is also an exception to the rule that says that identical tokens must refer to identical entities. If identical tokens refer to unrelated constants that have the same value and the address of the resulting expressions is not used (not even implicitly by binding a reference to a variable producing the constant), then the tokens are considered equivalent. This exception allows for program structures like the following:
 
 *//* ══ ***header.hpp:***\
-[#ifndef] HEADER_HPP\
-[#define] HEADER_HPP\
+#ifndef HEADER_HPP\
+#define HEADER_HPP\
 \
 [int const] length = 10;\
 \
@@ -21698,7 +19891,7 @@ class MiniBuffer {
 ...
 };
 \
-[#endif] *[// HEADER_HPP]*
+#endif // HEADER_HPP]*
 
 In principle, when this header file is included in two different translation units, two distinct constant variables named `length` are created because `const` in this context implies `static`. However, such constant variables are often meant to define compile-time constant values, not a particular storage location at run time. Hence, if we don't force such a storage location to exist (by referring to the address of the variable), it is sufficient for the two constants to have the same value.
 
@@ -21758,7 +19951,7 @@ The assignment `x = y` works because the expression on the right-hand side, `y`,
 
 ### B.2 Value Categories Since C++11 
 
-When rvalue references were introduced in C++11 in support of move semantics, the traditional partitioning of expressions into lvalues and rvalues was no longer sufficient to describe all the C++11 language behaviors. The C++ standardization committee therefore redesigned the value category system based on three core and two composite categories (see Figure [[B.1]]). The core categories are: *lvalue*, *prvalue* ("pure rvalue"), and *xvalue*. The composite categories are: *glvalue* ("generalized lvalue," which is the union of *lvalue* and *xvalue*) and *rvalue* (the union of *xvalue* and *prvalue*).
+When rvalue references were introduced in C++11 in support of move semantics, the traditional partitioning of expressions into lvalues and rvalues was no longer sufficient to describe all the C++11 language behaviors. The C++ standardization committee therefore redesigned the value category system based on three core and two composite categories (see Figure [[B.1]). The core categories are: *lvalue*, *prvalue* ("pure rvalue"), and *xvalue*. The composite categories are: *glvalue* ("generalized lvalue," which is the union of *lvalue* and *xvalue*) and *rvalue* (the union of *xvalue* and *prvalue*).
 
 Note that all expressions are still either *lvalues* or *rvalues*, but the *rvalues* category is now further subdivided.
 
@@ -21830,7 +20023,7 @@ We previously mentioned that lvalues often undergo an lvalue-to-rvalue conversio
 
 In C++17, there is a dual to this conversion, known as *temporary materialization* (but it could just as well have been called "prvalue-to-xvalue conversion"): Any time a prvalue validly appears where a glvalue (which includes the xvalue case) is expected, a temporary object is created and initialized with the prvalue (recall that prvalues are primarily "initializing values"), and the prvalue is replaced by an *xvalue* designating the temporary. For example:
 
-    int f[(int const]&);
+    int f(int const]&);
     int r = f(3);
 
 Because `f()` in this example has a reference parameter, it expects a glvalue argument. However, the expression `3` is a prvalue. The "temporary materialization" rule therefore kicks in, and the expression `3` is "converted" to an xvalue designating a temporary object initialized with the value 3.
@@ -21849,7 +20042,7 @@ More generally, a temporary is materialized to be initialized with a prvalue in 
 
 • The `sizeof` or `typeid` operator is applied to a prvalue.
 
-• A prvalue is the top-level expression in a statement of the form "*expr*`;`" or an expression is cast to `void`.
+• A prvalue is the top-level expression in a statement of the form "*expr*`;" or an expression is cast to `void`.
 
 Thus, in C++17, the object initialized by a prvalue is always determined by the context, and, as a result, temporaries are created only when they are really needed. Prior to C++17, prvalues (particularly of class type) always implied a temporary. Copies of those temporaries could optionally be elided later on, but a compiler still had to enforce most semantics constraints of the copy operation (e.g., a copy constructor may need to be callable). The following example shows a consequence of the C++17 revision of the rules:
 
@@ -21972,8 +20165,8 @@ int&& rref3 = xvalue();       // OK: rvalue reference can bind to an xrva
 
 [Click here to view code image]
 
-void display_num[(int]);    // #1
-void display_num[(double]); // #2
+void display_num(int);    // #1
+void display_num(double); // #2
 \
 int main()
 {
@@ -22011,8 +20204,8 @@ Overload resolution ranks the viable candidate functions by comparing how each a
 
 [Click here to view code image]
 
-void combine[(int], [double]);
-void combine[(long], int);
+void combine(int], [double);
+void combine(long], int);
 \
 int main()
 {
@@ -22039,12 +20232,12 @@ The following contrived example illustrates some of these matches:
 
 [Click here to view code image]
 
-int f1[(int]);     // #1
-int f1[(double]);  // #2
+int f1(int);     // #1
+int f1(double);  // #2
 `f1(4);`           // calls #1 : perfect match (#2 requires a standard conversion)
 \
-int f2[(int]);     // #3
-int f2[(char]);    // #4
+int f2(int);     // #3
+int f2(char);    // #4
 `f2(true);`        // calls #3 : match with promotion\
                  //           (#4 requires stronger standard conversion)
 \
@@ -22071,8 +20264,8 @@ MyString<T> truncate(MyString<T> const&, int);
 int main()
 {
     MyString<[char]> str1, str2;\
-    str1 = truncate[<char]>[(\"Hello World", 5);  //OK
-    str2 = truncate[(\"Hello World", 5);        //ERROR
+    str1 = truncate[<char]>(\"Hello World", 5);  //OK
+    str2 = truncate(\"Hello World", 5);        //ERROR
 }
 
 The implicit conversion provided through the converting constructor is not considered during template argument deduction. The assignment to `str2` finds no viable function `truncate()`; hence overload resolution is not performed at all.
@@ -22107,7 +20300,7 @@ The hidden `*this` parameter participates in overload resolution just like the e
 \
 class BadString {
   public:
-    BadString([char const]\*);
+    BadString([char const]\*]);
     ...
 \
     // character access through subscripting:
@@ -22122,7 +20315,7 @@ class BadString {
 \
 int main()
 {
-    BadString str[(\"correkt");
+    BadString str(\"correkt");
     str[5] = ['c']; //possibly an overload resolution ambiguity!
 }
 
@@ -22160,12 +20353,12 @@ For an argument of type `X`, there are four common parameter types that constitu
 
 [Click here to view code image]
 
-void report[(int]&);        // #1
-void report[(int const]&);  // #2
+void report(int]&);        // #1
+void report(int const]&);  // #2
 \
 int main()
 {
-    [for] [(int] k = 0; k<10; ++k) {
+    [for] (int] k = 0; k<10; ++k) {
          report(k);      // calls #1
     }
     report(42);          // calls #2
@@ -22213,13 +20406,13 @@ Finally, the following modification of our earlier example illustrates that two 
 
 [Click here to view code image]
 
-void report[(int]);         // #1
-void report[(int]&);        // #2
-void report[(int const]&);  // #3
+void report(int);         // #1
+void report(int]&);        // #2
+void report(int const]&);  // #3
 \
 int main()
 {
-    [for] [(int] k = 0; k<10; ++k) {
+    [for] (int] k = 0; k<10; ++k) {
         report(k);        // ambiguous: #1 and #2 match equally well
      }
     report(42);           // ambiguous: #1 and #3 match equally well
@@ -22236,7 +20429,7 @@ When all other aspects of overload resolution are equal, a nontemplate function 
 [Click here to view code image]
 
 template<typename T> int f(T);    // #1
-void f[(int]);                      // #2
+void f(int);                      // #2
 \
 int main()
 {
@@ -22263,7 +20456,7 @@ class Base {
 class Derived : [public] Base {
 };
 \
-void count[(int]);
+void count(int);
 \
 void process(Derived const& object)
 {
@@ -22280,7 +20473,7 @@ This is the most general kind of conversion sequence: a standard conversion (a d
 
 An important principle of overload resolution is that a conversion sequence that is a subsequence of another conversion sequence is preferable over the latter sequence. If there were an additional candidate function
 
-void count[(short]);
+void count(short);
 
 in the example, it would be preferred for the call `count(object)` because it doesn't require the third step (promotion) in the conversion sequence.
 
@@ -22302,8 +20495,8 @@ First, conversions to type `bool` (both from a regular pointer and from a pointe
 
 [Click here to view code image]
 
-;void check[(void]\*);  // #1
-void check[(bool]);    // #2
+;void check(void]\*);  // #1
+void check(bool);    // #2
 \
 void rearrange (Matrix\* m)
 {
@@ -22431,7 +20624,7 @@ The effect of this rule is that *any* initializer-list constructor is a better m
 \
 template<typename T>
 struct Array {
-  `Array(std::initializer_list<T>)    Array(unsigned n, T const&) {     std::cout << "#2\n`\";\
+  `Array(std::initializer_list<T>)    Array(unsigned n, T const&) {     std::cout << "#2\n";\
   }
 };
 \
@@ -22445,7 +20638,7 @@ int main()
 {
   arr1();                   // prints [#1]\
   arr1();                            // prints [#1]\
-   `arr1();`                          // prints `#1   arr2(, "list"});  //prints `#1   arr2();                     //prints `#2 }` `</code>`
+   `arr1();`                          // prints `#1   arr2(, "list"});  //prints `#1   arr2();                     //prints `#2 } `</code>`
 
 Note that the second constructor, which takes an `unsigned` and a `T const&`, won't be called when initializing an `Array<int>` object from an initializer list, because its initializer-list constructor is always a better match than its non-initializer-list constructors. With `Array<string>`, however, the non-initializer-list constructor will be called when the initializer-list constructor is not viable, as in the second call to `arr2()`.
 
@@ -22459,12 +20652,12 @@ A less obvious addition occurs when a class type object contains an implicit con
 
 [Click here to view code image]
 
-using FuncType = void [(double], int);
+using FuncType = void (double], int);
 \
 class IndirectFunctor {
   public:
     ...
-    [void operator]()[(double], [double]) const;\
+    [void operator]()(double], [double) const;\
     [operator] FuncType\*() const;\
 };
 \
@@ -22511,9 +20704,9 @@ class BigNum {
 void initDemo()
 {
     `BigNum bn1(100103);`        // selects #1
-    `BigNum bn2("7057103224.095764`\");        //selects #3
+    `BigNum bn2("7057103224.095764");        //selects #3
     int in = bn1;        // selects #5
-`}`
+}
 
 In this example, overload resolution is needed to select the appropriate constructor or conversion operator. Specifically, the initialization of `bn1` calls the first constructor, that of `bn2` calls the third constructor, and that of `in()` calls `operator long()`. In the vast majority of cases, the overloading rules produce the intuitive result. However, the details of these rules are quite complex, and some applications rely on some of the more obscure corners in this area of the C++ language.
 
@@ -22533,7 +20726,7 @@ In this example, overload resolution is needed to select the appropriate constru
 
 The C++ standard library largely consists of templates, many of which rely on various techniques introduced and discussed in this book. For this reason, a couple of techniques were "standardized" in the sense that the standard library defines several templates to implement libraries with generic code. These type utilities (type traits and other helpers) are listed and explained here in this chapter.
 
-Note that some type traits need compiler support, while others can just be implemented in the library using existing in-language features (we discuss some of them in [Chapter [19]]).
+Note that some type traits need compiler support, while others can just be implemented in the library using existing in-language features (we discuss some of them in [Chapter [19]).
 
 ### D.1 Using Type Traits 
 
@@ -22577,7 +20770,7 @@ int main()
              <<['`\n`'];\
    std::cout << td::is_same_v[<decltype](c), [int const]>        //since C++17
              << ['`\n`'];\
-   if (std::is_same[<decltype](c), [int const]>)  `bool      std::cout` << "`same \n`";\
+   if (std::is_same[<decltype](c), [int const]>)  `bool      std::cout` << "`same \n";\
    }
 }
 
@@ -22655,13 +20848,13 @@ int main()
 \
    auto ic = is_const<MyType>();              // object of trait type
    cout << is_same[<decltype](ic), is_const[<int]>>::value << '\n'; // [true]\
-   cout << ic() << '\n';           //function call (prints* false])
+   cout << ic() << '\n';           //function call (prints* false)
 \
    [static constexpr auto] mytypeIsConst = is_const<MyType>;\
    [if constexpr](mytypeIsConst) 
      ...                              //discarded statement
    }
-   [static_assert](!std::is_const<MyType>, "`MyType should not be const`");
+   [static_assert](!std::is_const<MyType>, "`MyType should not be const");
 }
 
 Having distinct types for non-Boolean `integral_constant` specializations is also useful in various metaprogramming contexts. See the discussion of the similar type `CTValue` in Section [[24.3]] on page [[566]] and its use for element access of tuples in Section [[25.6]] on page [[599]].
@@ -22698,7 +20891,7 @@ See Section [[15.10.2]] on page [[298]] for details.
 
 ### D.2 Primary and Composite Type Categories 
 
-We start with the standard traits that test primary and composite type categories (see [Figure [D.1]]).[3] In general, each type belongs to exactly one primary type category (the white elements in [Figure [D.1]]). Composite type categories then merge primary type categories into higher-level concepts.
+We start with the standard traits that test primary and composite type categories (see [Figure [D.1]).[3] In general, each type belongs to exactly one primary type category (the white elements in [Figure [D.1]). Composite type categories then merge primary type categories into higher-level concepts.
 
 ![Image](./graphics/f0702-01.jpg)
 
@@ -22741,8 +20934,8 @@ is_void_v<[void]>           // yields [true]\
 is_void_v<[void const]      // yields [true]\
 is_void_v<int>            // yields [false]\
 void f();
-is_void_v<decltype(f)>    // yields [false] ([f] has function type)
-is_void_v<decltype(f())>  // yields [true] (return type of [f()] is [void])
+is_void_v<decltype(f)>    // yields [false] ([f] has function type])
+is_void_v<decltype(f())>  // yields [true] (return type of [f()] is [void)
 
 `std:: is_integral < T >::value`
 
@@ -22774,11 +20967,11 @@ is_array_v<int[]>          // yields [true]\
 is_array_v<int[5]>         // yields [true]\
 is_array_v<int\*>           // yields [false]\
 \
-void foo[(int] a[], int b[5],int* c)
+void foo(int] a[], int b[5],int* c)
 {
-is_array_v<decltype(a)>    // yields [false] ([a] has type [inT)
-is_array_v<decltype(b)>    // yields [false] ([b] has type [inT)
-is_array_v<decltype(c)>    // yields [false] ([c] has type [inT)
+is_array_v<decltype(a)>    // yields [false] ([a] has type [inT])
+is_array_v<decltype(b)>    // yields [false] ([b] has type [inT])
+is_array_v<decltype(c)>    // yields [false] ([c] has type [inT])
 }
 
 • See Section [[19.8.2]] on page [[453]] for implementation details.
@@ -22809,10 +21002,10 @@ is_pointer_v<int\* const>           // yields [true]\
 is_pointer_v<int\*&>                // yields [false]\
 is_pointer_v<decltype([nullptr])>    // yields [false]\
 \
-int\* foo[(int] a[5], [void](f)())
+int\* foo(int] a[5], [void](f)())
 {
-  is_pointer_v<decltype(a)>          // yields [true] ([a] has type [inT)
-  is_pointer_v<decltype(f)>          // yields [true] ([f] has type [void(\*)()])
+  is_pointer_v<decltype(a)>          // yields [true] ([a] has type [inT])
+  is_pointer_v<decltype(f)>          // yields [true] ([f] has type [void(\*])())
   is_pointer_v<decltype(foo)>        // yields false
   is_pointer_v<decltype(&foo)>       // yields true
   is_pointer_v<decltype(foo(a,f))>   // yields true (for return type [inT)
@@ -22851,14 +21044,14 @@ is_null_pointer_v<decltype(p)>        // yields [false] ([p] has not typ
 
 [Click here to view code image]
 
-is_lvalue_reference_v<int>      *[// yields]* [false]\
-is_lvalue_reference_v<int&>      *[// yields]* [true]\
-is_lvalue_reference_v<int&&>      *[// yields]* [false]\
-is_lvalue_reference_v<[void]>      *[// yields]* [false]\
-is_rvalue_reference_v<int>      *[// yields]* [false]\
-is_rvalue_reference_v<int&>      *[// yields]* [false]\
-is_rvalue_reference_v<int&&>      *[// yields]* [true]\
-is_rvalue_reference_v<[void]>      *[// yields]* [false]
+is_lvalue_reference_v<int>      // yields]* [false]\
+is_lvalue_reference_v<int&>      // yields]* [true]\
+is_lvalue_reference_v<int&&>      // yields]* [false]\
+is_lvalue_reference_v<[void]>      // yields]* [false]\
+is_rvalue_reference_v<int>      // yields]* [false]\
+is_rvalue_reference_v<int&>      // yields]* [false]\
+is_rvalue_reference_v<int&&>      // yields]* [true]\
+is_rvalue_reference_v<[void]>      // yields]* [false]
 
 • See Section [[19.8.2]] on page [[452]] for implementation details.
 
@@ -22901,9 +21094,9 @@ is_class_v<decltype(l1)>        // yields [true] (a lambda is a class ob
 
 [Click here to view code image]
 
-void foo[(void](f)())
+void foo(void](f)())
 {
-is_function_v<decltype(f)>        // yields false ([f] has type [void(\*)()])
+is_function_v<decltype(f)>        // yields false ([f] has type [void(\*])())
 is_function_v<decltype(foo)>      // yields [true]\
 is_function_v<decltype(&foo)>     // yields [false]\
 is_function_v<decltype(foo(f))>   // yields [false] (for return type)
@@ -23280,7 +21473,7 @@ For example:
 int a2[5][7];\
 rank_v<decltype(a2)>;        // yields [2]\
 rank_v<int\*>;                // yields [0] (no array)
-[extern int] p1[];\
+extern int p1[];\
 rank_v<decltype(p1)>;        // yields[1]
 
 `std:: extent < T >::value`
@@ -23301,7 +21494,7 @@ extent_v<decltype(a2),0>;      // yields [5]\
 extent_v<decltype(a2),1>;      // yields [7]\
 extent_v<decltype(a2),2>;      // yields [0]\
 extent_v<int\*>;                // yields [0]\
-[extern int] p1[];\
+extern int p1[];\
 extent_v<decltype(p1)>;        // yields [0]
 
 `std:: underlying_type < T >::type`
@@ -23325,7 +21518,7 @@ extent_v<decltype(p1)>;        // yields [0]
 [Click here to view code image]
 
 struct C {
-  [bool operator]() [(int]) const {
+  [bool operator]() (int) const {
     [return true];\
   }
 };
@@ -23351,7 +21544,7 @@ std::is_invocable<int(\*)()>::value  //true
 [Click here to view code image]
 
 struct C {
-  [bool operator]() [(int]) const {
+  [bool operator]() (int) const {
    [return true];\
   }
 };
@@ -23389,19 +21582,19 @@ std::is_invocable_r<[long],int(\*)(int),[double]>::value  //true
 
 [Click here to view code image]
 
-std::string foo[(int]);
+std::string foo(int);
 \
-using R0 = typename std::result_of[<decltype](&foo)[(int])>::type;  // C++11
-using R1 = std::result_of_t[<decltype](&foo)[(int])>;        // C++14
+using R0 = typename std::result_of[<decltype](&foo)(int)>::type;  // C++11
+using R1 = std::result_of_t[<decltype](&foo)(int)>;        // C++14
 using R2 = std::invoke_result_t[<decltype](foo), int>;        // C++17
 \
 struct ABC {
    [virtual] \~ABC() = 0;\
-   [void operator]() [(int]) const {
+   [void operator]() (int) const {
    }
 };
 \
-using T1 = typename std::result_of<ABC[(int])>::type; // ERROR: [ABC] is abstract
+using T1 = typename std::result_of<ABC(int)>::type; // ERROR: [ABC] is abstract
 using T2 = typename std::invoke_result<ABC, int>::type; // OK since C++17
 
 See Section [[11.1.3]] on page [[163]] for a full example.
@@ -23794,9 +21987,9 @@ is_same_v<decltype(a),decltype(b)>     // yields [true]\
 using A = int;\
 is_same_v<A,int>                       // yields [true]\
 \
-auto x = [] [(int]) ;\
+auto x = [] (int) ;\
 auto y = x;\
-auto z = [] [(int]) ;\
+auto z = [] (int) ;\
 is_same_v<decltype(x),decltype(y)>     // yields [true]\
 is_same_v<decltype(x),decltype(z)>     // yields [false]
 
@@ -23901,7 +22094,7 @@ The traits listed in Table [[D.6]] allow us to construct types from other types.
 remove_cv_t<int>                  // yields int\
 remove_const_t<[int const]>         // yields int\
 remove_cv_t<[int const volatile]>   // yields int\
-remove_const_t<[int const]&>        // yields [int const&] (only refers to [int const])
+remove_const_t<[int const]&>        // yields [int const&] (only refers to [int const)
 
 Clearly, the order in which type construction traits are applied matters:[12]
 
@@ -24150,7 +22343,7 @@ Table [[D.7]] lists all remaining type traits. They query special properties or 
 
 template<typename T1, typename T2>
 struct common_type<T1,T2> {
-using type = std::decay_t[<decltype][(true] ? std::declval<T1>()
+using type = std::decay_t[<decltype](true] ? std::declval<T1>()
                                         : std::declval<T2>())>;\
 };
 
@@ -24593,10 +22786,10 @@ If it weren't for the differing constraints, these two declarations would declar
 int main()
 {
   printf(1);       // selects template [#1]\
-  printf("1\"s]);    //selects template [#2]\
+  printf("1\"s);    //selects template [#2]\
 }
 
-We could imagine a string-like type that supports integer-like computations. For example, if `"6"_NS` and `"7"_NS` are two literals for that type, multiplying those literals would produce the same value as `"42"_NS`. Such a type might satisfy both `IntegerLike` and `StringLike` and, therefore, a call like `print("42"_NS)` would be ambiguous.
+We could imagine a string-like type that supports integer-like computations. For example, if "6"_NS` and "7"_NS` are two literals for that type, multiplying those literals would produce the same value as "42"_NS`. Such a type might satisfy both `IntegerLike` and `StringLike` and, therefore, a call like `print("42"_NS)` would be ambiguous.
 
 #### E.3.1 Constraint Subsumption 
 
@@ -25533,7 +23726,7 @@ See *CRTP*.
 
 **decay**
 
-The implicit conversion of an array or a function to a pointer. For example, the string literal `"Hello"` has type `char const[6]`, but in many C++ contexts, it is implicitly converted to a pointer of type `char const*` (which points to the first character of the string).
+The implicit conversion of an array or a function to a pointer. For example, the string literal "Hello"` has type `char const[6]`, but in many C++ contexts, it is implicitly converted to a pointer of type `char const*` (which points to the first character of the string).
 
 **declaration**
 
